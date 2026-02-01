@@ -6,6 +6,7 @@ FFMPEG_EXE = r"C:\Users\12548\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpe
 DEVICE_NAME = "DECXIN Camera"
 RECORD_DIR = r"E:\research\0\stero\record"
 YAML_DIR = r"E:\research\0\stero\yaml"
+PLY_DIR = r"E:\research\0\stero\ply"
 
 SBS_W, SBS_H = 3840, 1080
 FPS = 30
@@ -19,3 +20,4 @@ SPLIT_GAP = 0
 
 os.makedirs(RECORD_DIR, exist_ok=True)
 os.makedirs(YAML_DIR, exist_ok=True)
+os.makedirs(PLY_DIR, exist_ok=True)

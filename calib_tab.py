@@ -474,7 +474,12 @@ class CalibTab(QWidget):
         self.timer.start(30)
 
     def _init_ui(self):
-        lay = QVBoxLayout(self)
+        from PyQt5.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        
+        container = QWidget()
+        lay = QVBoxLayout(container)
 
         row = QHBoxLayout()
         self.video_edit = QLineEdit()
@@ -537,6 +542,10 @@ class CalibTab(QWidget):
         self.log.setReadOnly(True)
         self.log.setFixedHeight(220)
         lay.addWidget(self.log)
+
+        scroll_area.setWidget(container)
+        main_lay = QVBoxLayout(self)
+        main_lay.addWidget(scroll_area)
 
     def log_add(self, s):
         self.log.append(s)

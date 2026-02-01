@@ -27,7 +27,12 @@ class PreviewRecordTab(QWidget):
         self.timer.start(30)
 
     def init_ui(self):
-        lay = QVBoxLayout(self)
+        from PyQt5.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        
+        container = QWidget()
+        lay = QVBoxLayout(container)
 
         ctrl = QHBoxLayout()
         self.btn_preview = QPushButton("开始预览")
@@ -60,6 +65,10 @@ class PreviewRecordTab(QWidget):
         self.log.setReadOnly(True)
         self.log.setFixedHeight(140)
         lay.addWidget(self.log)
+
+        scroll_area.setWidget(container)
+        main_lay = QVBoxLayout(self)
+        main_lay.addWidget(scroll_area)
 
     def _make_record_path(self):
         ts = time.strftime("%Y%m%d_%H%M%S")
