@@ -22,21 +22,46 @@ def make_object_points(cols, rows, square_mm):
 
 
 def find_corners(gray, pattern_size):
+    """
+    检测棋盘格角点
+    
+    参数：
+        gray: 灰度图像
+        pattern_size: 棋盘格模式尺寸 (cols, rows)
+    
+    返回：
+        (ok, corners): (是否成功, 角点坐标)
+    """
     cols, rows = pattern_size
 
-    # 更稳的 SB（如果 OpenCV 支持）
-    if hasattr(cv2, "findChessboardCornersSB"):
-        ok, corners = cv2.findChessboardCornersSB(gray, (cols, rows))
-        if ok:
-            return True, corners.astype(np.float32)
+    # 图像预处理：高斯模糊，减少噪声
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
 
-    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
-    ok, corners = cv2.findChessboardCorners(gray, (cols, rows), flags)
+    # 更稳的 SB 算法（如果 OpenCV 支持）
+    if hasattr(cv2, "findChessboardCornersSB"):
+        try:
+            ok, corners = cv2.findChessboardCornersSB(blurred, (cols, rows))
+            if ok:
+                # 不需要额外的亚像素精确化，SB 算法已经很精确
+                return True, corners.astype(np.float32)
+        except Exception as e:
+            # 如果 SB 算法失败，回退到传统算法
+            pass
+
+    # 传统角点检测算法
+    flags = (
+        cv2.CALIB_CB_ADAPTIVE_THRESH | 
+        cv2.CALIB_CB_NORMALIZE_IMAGE |
+        cv2.CALIB_CB_FAST_CHECK  # 快速检查，提高检测速度
+    )
+    
+    ok, corners = cv2.findChessboardCorners(blurred, (cols, rows), flags)
     if not ok:
         return False, None
 
-    term = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-4)
-    corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), term)
+    # 亚像素精确化，使用更小的窗口提高速度
+    term = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1e-3)
+    corners2 = cv2.cornerSubPix(blurred, corners, (7, 7), (-1, -1), term)
     return True, corners2
 
 
@@ -140,9 +165,26 @@ def _pair_quality_features(cols: int, rows: int, cL, cR, image_size):
 
 def select_diverse_subset(payload, pattern, target_n=120, top_pool_factor=2.0):
     """
-    从 payload 里选子集：
-      1) 按质量分数排序，取前 top_pool
-      2) 在 top_pool 里做 farthest-point sampling，选 target_n 个（覆盖多样姿态）
+    从大量标定图像对中选择质量好且分布均匀的子集，用于提高标定精度
+    
+    参数：
+        payload: 包含标定数据的字典，必须包含以下键：
+            - objpoints: 物体点坐标列表
+            - imgL: 左相机角点坐标列表
+            - imgR: 右相机角点坐标列表
+            - image_size: 图像尺寸
+            - used: 有效标定对数量
+        pattern: 棋盘格模式尺寸 (cols, rows)
+        target_n: 目标选择的标定对数量
+        top_pool_factor: 质量排序后的候选池大小因子
+    
+    返回：
+        新的payload字典，只包含选择的子集数据
+    
+    实现步骤：
+        1. 按质量分数排序，取前 top_pool 个高质量标定对
+        2. 在 top_pool 中使用 farthest-point sampling 算法选择 target_n 个分布均匀的标定对
+        3. 组装并返回新的payload
     """
     used = int(payload.get("used", 0))
     if used <= 0:
@@ -159,40 +201,44 @@ def select_diverse_subset(payload, pattern, target_n=120, top_pool_factor=2.0):
     target_n = int(min(max(10, target_n), N))
     top_pool = int(min(N, max(target_n, int(round(target_n * float(top_pool_factor))))))
 
-    # 计算每个pair的质量+特征
+    # 计算每个标定对的质量分数和特征向量
     qualities = np.zeros((N,), dtype=np.float64)
     feats = np.zeros((N, 5), dtype=np.float32)
 
     for i in range(N):
         q, f = _pair_quality_features(cols, rows, imgL[i], imgR[i], image_size)
-        qualities[i] = q
-        feats[i, :] = f
+        qualities[i] = q  # 质量分数，越小越好
+        feats[i, :] = f    # 特征向量，用于多样性评估
 
+    # 按质量分数排序，选择前 top_pool 个
     order = np.argsort(qualities)  # 小->大
     pool_idx = order[:top_pool]
 
-    # 归一化特征（用pool统计量）
+    # 归一化特征向量（使用候选池的统计量）
     F = feats[pool_idx].astype(np.float64)
     mu = F.mean(axis=0)
-    sd = F.std(axis=0) + 1e-9
+    sd = F.std(axis=0) + 1e-9  # 避免除零
     Fn = (F - mu) / sd
 
-    # FPS：先选质量最好的，然后不断选“离已选集合最远”的点
+    # 使用 farthest-point sampling (FPS) 算法选择分布均匀的标定对
     selected_pool_pos = []
-    selected_pool_pos.append(0)  # pool里第0个就是全局最优quality
+    selected_pool_pos.append(0)  # 先选择质量最好的
     dist_to_sel = np.full((top_pool,), np.inf, dtype=np.float64)
 
     for _ in range(1, target_n):
         last = selected_pool_pos[-1]
+        # 计算每个点到最近已选点的距离
         d = np.linalg.norm(Fn - Fn[last], axis=1)
         dist_to_sel = np.minimum(dist_to_sel, d)
+        # 选择距离最远的点
         nxt = int(np.argmax(dist_to_sel))
         selected_pool_pos.append(nxt)
 
+    # 转换为原始索引
     sel_idx = pool_idx[np.array(selected_pool_pos, dtype=np.int64)]
     sel_idx = sel_idx.tolist()
 
-    # 组装新的payload（只替换这三项）
+    # 组装新的payload，只包含选择的子集
     new_payload = dict(payload)
     new_payload["objpoints"] = [objpoints[i] for i in sel_idx]
     new_payload["imgL"] = [imgL[i] for i in sel_idx]
@@ -284,20 +330,30 @@ class CalibThread(QThread):
     done_signal = pyqtSignal(str)     # out_yaml
     err_signal = pyqtSignal(str)
 
-    def __init__(self, payload, cols, rows, square_mm, record_dir):
+    def __init__(self, payload, cols, rows, square_mm, yaml_dir):
         super().__init__()
         self.payload = payload
         self.cols = int(cols)
         self.rows = int(rows)
         self.square_mm = float(square_mm)
-        self.record_dir = record_dir
+        self.yaml_dir = yaml_dir
 
     def run(self):
         try:
-            objpoints = self.payload["objpoints"]
-            imgL = self.payload["imgL"]
-            imgR = self.payload["imgR"]
-            image_size = self.payload["image_size"]
+            # 验证 payload 数据
+            if not self.payload:
+                raise ValueError("Empty payload received")
+                
+            objpoints = self.payload.get("objpoints")
+            imgL = self.payload.get("imgL")
+            imgR = self.payload.get("imgR")
+            image_size = self.payload.get("image_size")
+            
+            if not all([objpoints, imgL, imgR, image_size]):
+                raise ValueError("Incomplete payload data")
+                
+            if len(objpoints) < 10:
+                raise ValueError(f"Not enough calibration pairs: {len(objpoints)}")
 
             def ts():
                 return datetime.now().strftime("%H:%M:%S")
@@ -310,14 +366,22 @@ class CalibThread(QThread):
             # ---------- left ----------
             log(f"[INFO] Calibrating left camera... (pairs={len(objpoints)}, image_size={image_size})")
             t0 = datetime.now()
-            rmsL, K1, D1, _, _ = cv2.calibrateCamera(objpoints, imgL, image_size, None, None)
-            log(f"[LEFT] RMS reproj err: {rmsL:.4f} | time={(datetime.now()-t0).total_seconds():.2f}s")
+            try:
+                rmsL, K1, D1, _, _ = cv2.calibrateCamera(objpoints, imgL, image_size, None, None)
+                log(f"[LEFT] RMS reproj err: {rmsL:.4f} | time={(datetime.now()-t0).total_seconds():.2f}s")
+            except Exception as e:
+                log(f"[ERR] Left camera calibration failed: {str(e)}")
+                raise
 
             # ---------- right ----------
             log("[INFO] Calibrating right camera...")
             t0 = datetime.now()
-            rmsR, K2, D2, _, _ = cv2.calibrateCamera(objpoints, imgR, image_size, None, None)
-            log(f"[RIGHT] RMS reproj err: {rmsR:.4f} | time={(datetime.now()-t0).total_seconds():.2f}s")
+            try:
+                rmsR, K2, D2, _, _ = cv2.calibrateCamera(objpoints, imgR, image_size, None, None)
+                log(f"[RIGHT] RMS reproj err: {rmsR:.4f} | time={(datetime.now()-t0).total_seconds():.2f}s")
+            except Exception as e:
+                log(f"[ERR] Right camera calibration failed: {str(e)}")
+                raise
 
             # ---------- stereo ----------
             log("[INFO] Stereo calibration (fix intrinsics)...")
@@ -325,53 +389,70 @@ class CalibThread(QThread):
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5)
 
             t0 = datetime.now()
-            rmsS, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
-                objpoints, imgL, imgR, K1, D1, K2, D2, image_size,
-                criteria=criteria, flags=flags
-            )
-            baseline = float(np.linalg.norm(T))
-            log(f"[STEREO] RMS reproj err: {rmsS:.4f} | time={(datetime.now()-t0).total_seconds():.2f}s")
-            log(f"[STEREO] T (mm): {T.ravel()}  | baseline(mm)={baseline:.3f}")
+            try:
+                rmsS, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
+                    objpoints, imgL, imgR, K1, D1, K2, D2, image_size,
+                    criteria=criteria, flags=flags
+                )
+                baseline = float(np.linalg.norm(T))
+                log(f"[STEREO] RMS reproj err: {rmsS:.4f} | time={(datetime.now()-t0).total_seconds():.2f}s")
+                log(f"[STEREO] T (mm): {T.ravel()}  | baseline(mm)={baseline:.3f}")
+            except Exception as e:
+                log(f"[ERR] Stereo calibration failed: {str(e)}")
+                raise
 
             # ---------- rectify ----------
             log("[INFO] stereoRectify...")
             t0 = datetime.now()
-            R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-                K1, D1, K2, D2, image_size, R, T,
-                flags=cv2.CALIB_ZERO_DISPARITY, alpha=0
-            )
-            log(f"[RECTIFY] done | time={(datetime.now()-t0).total_seconds():.2f}s")
+            try:
+                R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
+                    K1, D1, K2, D2, image_size, R, T,
+                    flags=cv2.CALIB_ZERO_DISPARITY, alpha=0
+                )
+                log(f"[RECTIFY] done | time={(datetime.now()-t0).total_seconds():.2f}s")
+            except Exception as e:
+                log(f"[ERR] Stereo rectification failed: {str(e)}")
+                raise
 
             # ---------- save ----------
             ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             out_yaml = os.path.join(
-                self.record_dir,
+                self.yaml_dir,
                 f"stereo_calib_{ts_str}_stRMS{rmsS:.2f}_B{baseline:.1f}mm.yaml"
             )
 
             log(f"[INFO] Saving YAML -> {out_yaml}")
             t0 = datetime.now()
-            fs = cv2.FileStorage(out_yaml, cv2.FILE_STORAGE_WRITE)
-            fs.write("image_width", image_size[0])
-            fs.write("image_height", image_size[1])
-            fs.write("pattern_cols", self.cols)
-            fs.write("pattern_rows", self.rows)
-            fs.write("square_size_mm", self.square_mm)
-            fs.write("K1", K1); fs.write("D1", D1)
-            fs.write("K2", K2); fs.write("D2", D2)
-            fs.write("R", R);   fs.write("T", T)
-            fs.write("E", E);   fs.write("F", F)
-            fs.write("R1", R1); fs.write("R2", R2)
-            fs.write("P1", P1); fs.write("P2", P2)
-            fs.write("Q", Q)
-            fs.release()
-            log(f"[DONE] Saved calibration YAML | time={(datetime.now()-t0).total_seconds():.2f}s")
+            try:
+                # 确保输出目录存在
+                os.makedirs(os.path.dirname(out_yaml), exist_ok=True)
+                
+                fs = cv2.FileStorage(out_yaml, cv2.FILE_STORAGE_WRITE)
+                fs.write("image_width", image_size[0])
+                fs.write("image_height", image_size[1])
+                fs.write("pattern_cols", self.cols)
+                fs.write("pattern_rows", self.rows)
+                fs.write("square_size_mm", self.square_mm)
+                fs.write("K1", K1); fs.write("D1", D1)
+                fs.write("K2", K2); fs.write("D2", D2)
+                fs.write("R", R);   fs.write("T", T)
+                fs.write("E", E);   fs.write("F", F)
+                fs.write("R1", R1); fs.write("R2", R2)
+                fs.write("P1", P1); fs.write("P2", P2)
+                fs.write("Q", Q)
+                fs.release()
+                log(f"[DONE] Saved calibration YAML | time={(datetime.now()-t0).total_seconds():.2f}s")
+            except Exception as e:
+                log(f"[ERR] Failed to save calibration file: {str(e)}")
+                raise
 
             log(f"[TOTAL] do_calibrate finished | total_time={(datetime.now()-t_all).total_seconds():.2f}s")
             self.done_signal.emit(out_yaml)
 
         except Exception as e:
-            self.err_signal.emit(str(e))
+            error_msg = f"Calibration failed: {str(e)}"
+            log(f"[ERR] {error_msg}")
+            self.err_signal.emit(error_msg)
 
 
 class CalibTab(QWidget):
@@ -553,7 +634,7 @@ class CalibTab(QWidget):
             cols=self.cols.value(),
             rows=self.rows.value(),
             square_mm=self.square.value(),
-            record_dir=YAML_DIR
+            yaml_dir=YAML_DIR
         )
         self.calib_thread.log_signal.connect(self.log_add)
         self.calib_thread.done_signal.connect(self._on_calib_done)

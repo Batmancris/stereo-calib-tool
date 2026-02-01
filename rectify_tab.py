@@ -30,6 +30,22 @@ def bgr_to_qpixmap(bgr: np.ndarray) -> QPixmap:
 
 
 def reproject_point(u, v, d, Q):
+    """
+    使用重投影矩阵 Q 将像素坐标和视差转换为三维坐标
+    
+    参数：
+        u: 像素点的 u 坐标（水平方向）
+        v: 像素点的 v 坐标（垂直方向）
+        d: 视差，即左右相机中对应点的水平像素差
+        Q: 重投影矩阵，由 stereoRectify 函数计算得到
+    
+    返回：
+        三维坐标数组 [X, Y, Z]，单位与标定板方格尺寸一致
+    
+    原理：
+        使用公式：[X, Y, Z, W]^T = Q * [u, v, d, 1]^T
+        然后通过透视除法：X = X/W, Y = Y/W, Z = Z/W
+    """
     vec = Q @ np.array([float(u), float(v), float(d), 1.0], dtype=np.float64)
     W = vec[3]
     if abs(W) < 1e-12:
@@ -399,6 +415,19 @@ class RectifyTab(QWidget):
         self._show_latest_lr()
 
     def compute_distance(self):
+        """
+        计算两点之间的三维距离
+        
+        步骤：
+            1. 验证必要的参数是否已设置
+            2. 获取四个点的像素坐标
+            3. 检查左右相机中对应点的垂直坐标是否一致（验证矫正效果）
+            4. 计算视差
+            5. 使用重投影矩阵 Q 将像素坐标和视差转换为三维坐标
+            6. 计算两点之间的欧氏距离
+            7. 与已知长度比较，计算误差
+            8. 显示结果
+        """
         if self.Q is None or self.w is None:
             QMessageBox.warning(self, "错误", "请先加载 YAML 并打开视频/冻结帧")
             return
@@ -406,22 +435,27 @@ class RectifyTab(QWidget):
             QMessageBox.warning(self, "错误", "请先按顺序点击四个点：A左→A右→B左→B右")
             return
 
+        # 获取四个点的像素坐标
         uL_A, vL_A = float(self.A_L[0]), float(self.A_L[1])
         uR_A, vR_A = float(self.A_R[0]), float(self.A_R[1])
         uL_B, vL_B = float(self.B_L[0]), float(self.B_L[1])
         uR_B, vR_B = float(self.B_R[0]), float(self.B_R[1])
 
         def v_check(name, vL, vR):
+            """检查左右相机中对应点的垂直坐标是否一致"""
             dv = abs(vL - vR)
             if dv > 2.0:
                 self.log_add(f"[WARN] {name}: |vL-vR|={dv:.2f}px 偏大：要么点错对应点，要么矫正不够好。")
 
+        # 检查垂直坐标一致性（验证矫正效果）
         v_check("A", vL_A, vR_A)
         v_check("B", vL_B, vR_B)
 
+        # 计算平均垂直坐标
         vA = 0.5 * (vL_A + vR_A)
         vB = 0.5 * (vL_B + vR_B)
 
+        # 计算视差
         dA = uL_A - uR_A
         dB = uL_B - uR_B
         if dA <= 0 or dB <= 0:
@@ -429,17 +463,20 @@ class RectifyTab(QWidget):
             return
 
         try:
+            # 重投影到三维空间
             PA = reproject_point(uL_A, vA, dA, self.Q)
             PB = reproject_point(uL_B, vB, dB, self.Q)
         except Exception as e:
             self.log_add(f"[ERR] reprojection failed: {e}")
             return
 
+        # 计算三维距离
         dist = float(np.linalg.norm(PA - PB))
         gt = float(self.len_mm.value())
         err = dist - gt
         rel = (err / gt) * 100.0 if gt > 1e-9 else 0.0
 
+        # 记录和显示结果
         self.log_add(f"[3D] A(mm) = {PA.round(2)}   dA={dA:.2f}px")
         self.log_add(f"[3D] B(mm) = {PB.round(2)}   dB={dB:.2f}px")
         self.log_add(f"[MEAS] distance = {dist:.2f} mm | GT = {gt:.2f} mm | error = {err:+.2f} mm ({rel:+.2f}%)")

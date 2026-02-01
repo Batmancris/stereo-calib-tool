@@ -90,50 +90,62 @@ class FFmpegPreviewThread(QThread):
         t0 = time.time()
         cnt = 0
 
-        while self.running and self.proc and self.proc.stdout:
-            chunk = self.proc.stdout.read(4096)
-            if not chunk:
+        try:
+            while self.running and self.proc and self.proc.stdout:
                 try:
-                    err = self.proc.stderr.read().decode(errors="ignore")
-                    if err.strip():
-                        self.log_signal.emit("[FFMPEG-ERR]\n" + err)
-                except Exception:
-                    pass
-                break
+                    chunk = self.proc.stdout.read(4096)
+                    if not chunk:
+                        try:
+                            err = self.proc.stderr.read().decode(errors="ignore")
+                            if err.strip():
+                                self.log_signal.emit("[FFMPEG-ERR]\n" + err)
+                        except Exception as e:
+                            self.log_signal.emit(f"[ERR] Error reading stderr: {str(e)}")
+                        break
 
-            buf.extend(chunk)
+                    buf.extend(chunk)
 
-            while True:
-                s = buf.find(SOI)
-                if s < 0:
-                    if len(buf) > 2_000_000:
-                        del buf[:-1024]
+                    while True:
+                        s = buf.find(SOI)
+                        if s < 0:
+                            if len(buf) > 2_000_000:
+                                del buf[:-1024]
+                            break
+                        e = buf.find(EOI, s + 2)
+                        if e < 0:
+                            if s > 0:
+                                del buf[:s]
+                            break
+
+                        jpg = bytes(buf[s:e + 2])
+                        del buf[:e + 2]
+
+                        try:
+                            arr = np.frombuffer(jpg, dtype=np.uint8)
+                            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                            if frame is None:
+                                continue
+                            self.frame_signal.emit(frame)
+
+                            cnt += 1
+                            t1 = time.time()
+                            if t1 - t0 >= 1.0:
+                                self.log_signal.emit(f"[PREVIEW FPS] {cnt/(t1-t0):.1f}")
+                                t0, cnt = t1, 0
+                        except Exception as e:
+                            self.log_signal.emit(f"[ERR] Error processing frame: {str(e)}")
+                            continue
+                except Exception as e:
+                    self.log_signal.emit(f"[ERR] Error reading stream: {str(e)}")
                     break
-                e = buf.find(EOI, s + 2)
-                if e < 0:
-                    if s > 0:
-                        del buf[:s]
-                    break
-
-                jpg = bytes(buf[s:e + 2])
-                del buf[:e + 2]
-
-                arr = np.frombuffer(jpg, dtype=np.uint8)
-                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                if frame is None:
-                    continue
-                self.frame_signal.emit(frame)
-
-                cnt += 1
-                t1 = time.time()
-                if t1 - t0 >= 1.0:
-                    self.log_signal.emit(f"[PREVIEW FPS] {cnt/(t1-t0):.1f}")
-                    t0, cnt = t1, 0
-
-        if self.proc is not None:
-            try:
-                self.proc.kill()
-            except Exception:
-                pass
-        self.proc = None
-        self.running = False
+        except Exception as e:
+            self.log_signal.emit(f"[ERR] Unexpected error in FFmpeg thread: {str(e)}")
+        finally:
+            if self.proc is not None:
+                try:
+                    self.proc.kill()
+                except Exception as e:
+                    self.log_signal.emit(f"[ERR] Error killing process: {str(e)}")
+            self.proc = None
+            self.running = False
+            self.log_signal.emit("[INFO] FFmpeg thread stopped")

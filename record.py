@@ -27,32 +27,16 @@ from PyQt5.QtGui import QImage, QPixmap
 
 
 # ===================== 参数区 =====================
-from config import RECORD_DIR, DEVICE_NAME, SBS_W, SBS_H, FPS, FFMPEG_EXE
-
-# 预览输出分辨率（越大越清晰，越小越省）
-PREVIEW_W, PREVIEW_H = 1920, 540
-
-# 分割微调
-SPLIT_OFFSET = 0
-SPLIT_GAP = 0
+from config import (
+    RECORD_DIR, DEVICE_NAME, SBS_W, SBS_H, FPS, FFMPEG_EXE,
+    PREVIEW_W, PREVIEW_H, SPLIT_OFFSET, SPLIT_GAP
+)
+from utils_img import split_sbs
 # =================================================
 
 if not os.path.isfile(FFMPEG_EXE):
     raise FileNotFoundError(f"FFMPEG_EXE 不存在：{FFMPEG_EXE}")
 print(f"[FFMPEG] {FFMPEG_EXE}")
-
-
-def split_sbs(frame_bgr, offset=0, gap=0):
-    """把 SBS 拼接图分割成左右眼"""
-    h, w = frame_bgr.shape[:2]
-    cut = w // 2 + int(offset)
-    cut = max(1, min(w - 1, cut))
-    gap = max(0, int(gap))
-    left_end = max(1, cut - gap // 2)
-    right_start = min(w - 1, cut + (gap - gap // 2))
-    left = frame_bgr[:, :left_end]
-    right = frame_bgr[:, right_start:]
-    return left, right
 
 
 class FFmpegReader(QThread):
