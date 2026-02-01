@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 
 from utils_img import split_sbs, to_pixmap_fit
-from config import RECORD_DIR
+from config import RECORD_DIR, YAML_DIR
 
 
 def make_object_points(cols, rows, square_mm):
@@ -553,7 +553,7 @@ class CalibTab(QWidget):
             cols=self.cols.value(),
             rows=self.rows.value(),
             square_mm=self.square.value(),
-            record_dir=RECORD_DIR
+            record_dir=YAML_DIR
         )
         self.calib_thread.log_signal.connect(self.log_add)
         self.calib_thread.done_signal.connect(self._on_calib_done)

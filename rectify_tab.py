@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QImage, QPixmap
 
 from utils_img import split_sbs
-from config import RECORD_DIR
+from config import RECORD_DIR, YAML_DIR
 from clickable_label import ClickableImageLabel
 
 
@@ -171,7 +171,7 @@ class RectifyTab(QWidget):
         self.log.append(s)
 
     def pick_yaml(self):
-        p, _ = QFileDialog.getOpenFileName(self, "选择YAML", RECORD_DIR, "YAML (*.yaml *.yml)")
+        p, _ = QFileDialog.getOpenFileName(self, "选择YAML", YAML_DIR, "YAML (*.yaml *.yml)")
         if p:
             self.yaml_edit.setText(p)
 
