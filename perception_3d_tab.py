@@ -433,19 +433,19 @@ class Perception3DTab(QWidget):
         fps = 30
         interval_ms = max(1, int(round(1000.0 / float(fps))))
         self.play_timer.setInterval(interval_ms)
-        if self.playing:
+        if self.is_playing:
             self.play_timer.start()
 
     def toggle_play(self):
-        if self.cap is None:
+        if self.video_capture is None:
             QMessageBox.warning(self, "错误", "请先打开视频")
             return
         if self.map1x is None:
             QMessageBox.warning(self, "错误", "请先加载 YAML")
             return
 
-        self.playing = not self.playing
-        if self.playing:
+        self.is_playing = not self.is_playing
+        if self.is_playing:
             self.btn_play.setText("⏸ 暂停")
             self.play_timer.start()
         else:
