@@ -1,56 +1,43 @@
 ﻿# Stereo Calibration and High-Precision Tracking Tool
 
-## 中文说明
+双目标定、矫正、测距与机械臂高精度三维关键点追踪工具。
+Stereo calibration, rectification, measurement, and high-precision 3D keypoint tracking for robotic-arm bending experiments.
 
-### 项目概览
-这是一个基于 Python、OpenCV 和 PyQt5 的双目视觉实验工具，用于双目标定、双目矫正、视频录制、交互式测距，以及面向机械臂弯曲实验的高精度关键点三维追踪。
+## Overview | 项目概览
+This project is a PyQt5 desktop app built on OpenCV for stereo-camera experiments. It covers live preview, video recording, chessboard-based stereo calibration, rectified playback, interactive measurement, dense disparity exploration, and a sparse high-precision tracking workflow for robotic-arm motion analysis.
 
-### 当前主要功能
-- 双目相机预览与录像
-- 棋盘格双目标定与 YAML 导出
-- 矫正后双目视频回放与手工测距
-- 稠密视差与点云浏览
-- 高精度关键点追踪实验模式
-  - 首帧手工初始化 15 个点
-  - 后续帧使用 `calcOpticalFlowPyrLK` 跟踪左图关键点
-  - 右图在极线附近做局部模板匹配，并允许人工修正
-  - 使用矫正后的投影矩阵 `P1/P2` 直接三角化，获得每个点的 `X/Y/Z`
-  - 导出逐帧 CSV 数据
-  - 导出三维骨架动画 MP4
+这个项目是一个基于 OpenCV 和 PyQt5 的双目视觉桌面工具，覆盖相机预览、视频录制、棋盘格双目标定、双目矫正、交互式测距、稠密视差浏览，以及面向机械臂弯曲实验的稀疏高精度三维关键点追踪流程。
 
-### 为什么高精度模式不依赖整张视差图
-机械臂实验更关心少量固定实验点的空间轨迹，而不是整场景的稠密深度。对这类任务，直接维护左右对应关键点并做三角化，通常比依赖整张视差图更稳，也更容易控制误差。
+## Highlights | 主要能力
+- Stereo preview and recording | 双目预览与录像
+- Stereo calibration with YAML export | 双目标定与 YAML 导出
+- Rectified playback and manual 3D measurement | 矫正后回放与手工三维测距
+- Dense disparity and point cloud inspection | 稠密视差与点云浏览
+- High-precision sparse tracking workflow | 高精度稀疏点追踪流程
+- CSV export for frame-by-frame coordinates | 逐帧坐标 CSV 导出
+- MP4 export for simplified 3D skeleton animation | 三维骨架动画 MP4 导出
 
-### 主要依赖
-- Python 3.9+
-- opencv-python
-- numpy
-- pyqt5
-- matplotlib
-- open3d
-- ffmpeg
+## High-Precision Workflow | 高精度实验流程
+The new workflow is designed for experiments where only a small set of landmarks matters. Instead of treating dense disparity as the main source of truth, it tracks left/right correspondences for fixed keypoints and triangulates them directly from the rectified stereo projection matrices.
 
-安装示例：
-```bash
-pip install opencv-python numpy pyqt5 matplotlib open3d
-```
+新的实验流程面向“少量固定实验点”的场景，不再把整张视差图作为主依据，而是直接维护左右图关键点对应关系，并使用矫正后的双目投影矩阵进行三角化，从而得到更稳定、可控的高精度三维坐标。
 
-### 运行方式
-```bash
-python main.py
-```
+### Tracking pipeline | 追踪步骤
+1. Load the stereo YAML file. | 加载双目标定 YAML。
+2. Open a recorded experiment video. | 打开实验录像。
+3. Freeze a clear frame in the `3D Perception` tab. | 在“三维感知”页冻结一帧清晰图像。
+4. Initialize `P01 ~ P15` on the left image. | 在左图初始化 `P01 ~ P15`。
+5. Review or correct the suggested right-image correspondences. | 检查并修正右图建议对应点。
+6. Save the frame. | 保存当前帧。
+7. Track the next frame automatically and correct low-confidence points. | 自动跟踪下一帧，并修正低置信度点。
+8. Export CSV and the 3D animation after enough frames are collected. | 在收集足够帧后导出 CSV 和 3D 动画。
 
-### 高精度关键点追踪使用流程
-1. 先完成双目标定，并加载标定得到的 YAML。
-2. 打开实验视频，在“三维感知”页冻结一帧清晰的机械臂图像。
-3. 点击“开始首帧初始化”。
-4. 在左图依次点击 `P01 ~ P15`，系统会自动给出右图建议点。
-5. 在右图逐点修正对应点，保证 `|vL - vR|` 尽量小。
-6. 点击“保存当前帧”。
-7. 点击“自动跟踪下一帧”，检查低置信度点并修正。
-8. 重复保存所需帧后，导出 CSV 和 3D 动画。
+## Why Sparse Tracking Instead of Dense Disparity | 为什么主流程不用整张视差图
+Dense disparity is still useful for visualization, but robotic-arm bending experiments usually care about a limited number of stable landmarks. Sparse stereo correspondences plus triangulation are often more robust when the scene contains dark backgrounds, highlights, repeated structures, or reflective surfaces.
 
-### CSV 输出字段
+稠密视差图依然适合做可视化，但机械臂弯曲实验通常只关心少量稳定实验点。在黑色背景、反光表面、重复结构较多的场景里，稀疏对应点加三角化通常比整图视差更稳，也更容易控制误差传播。
+
+## CSV Output | CSV 输出字段
 - `frame_idx`
 - `timestamp_sec`
 - `point_id`
@@ -60,44 +47,14 @@ python main.py
 - `track_status`
 - `confidence`
 
-### 精度建议
-- 优先保证标定质量，尤其是双目外参与重投影误差。
-- 使用 `SPLIT_OFFSET` 和 `SPLIT_GAP` 精确切分左右图。
-- 选点时尽量点击稳定的结构角点或纹理点，避免纯高光区域。
-- 重点关注保存帧时日志中的平均 `|vL-vR|`，这个值越小越好。
-- 对自动匹配结果保持人工复核，尤其是遮挡、反光和快速弯曲阶段。
+## Accuracy Notes | 精度建议
+- Calibration quality is the first priority. | 标定质量永远是第一优先级。
+- Keep `SPLIT_OFFSET` and `SPLIT_GAP` consistent with the real stereo split. | `SPLIT_OFFSET` 和 `SPLIT_GAP` 必须与真实拼接边界一致。
+- Prefer stable corners or textured landmarks over specular highlights. | 尽量选择稳定角点或纹理点，不要选强反光区域。
+- Watch the average `|vL-vR|` when saving a frame. | 保存帧时重点关注平均 `|vL-vR|`。
+- Always review low-confidence matches manually. | 对低置信度匹配一定要人工复核。
 
-### 项目结构
-- `main.py`: 主界面入口
-- `preview_record_tab.py`: 预览与录制
-- `calib_tab.py`: 标定流程
-- `rectify_tab.py`: 矫正与交互测距
-- `perception_3d_tab.py`: 三维感知与高精度关键点追踪
-- `utils_img.py`: 图像切分与显示辅助函数
-- `config.py`: 路径、分辨率与设备配置
-
-## English
-
-### Overview
-This project is a stereo-vision desktop tool built with Python, OpenCV, and PyQt5. It supports stereo preview, recording, calibration, rectification, interactive measurement, dense disparity exploration, and a new high-precision 3D keypoint tracking workflow for robotic arm bending experiments.
-
-### Key Features
-- Stereo camera preview and recording
-- Chessboard-based stereo calibration with YAML export
-- Rectified video playback and interactive distance measurement
-- Dense disparity and point-cloud inspection
-- High-precision keypoint tracking mode
-  - Manual initialization of 15 keypoints on the first frame
-  - Left-image tracking with `calcOpticalFlowPyrLK`
-  - Local right-image matching along the epipolar line, with manual correction
-  - Direct triangulation from rectified projection matrices `P1/P2`
-  - CSV export for frame-by-frame 3D data
-  - MP4 export for a simplified 3D skeleton animation
-
-### Why the high-precision workflow does not rely on dense disparity
-For bending experiments, the real target is the 3D trajectory of a small set of fixed landmarks rather than a dense depth map of the entire scene. Tracking stereo correspondences for those landmarks and triangulating them directly is usually more stable and more accurate than relying on a full disparity image.
-
-### Dependencies
+## Dependencies | 依赖
 - Python 3.9+
 - opencv-python
 - numpy
@@ -106,32 +63,27 @@ For bending experiments, the real target is the 3D trajectory of a small set of 
 - open3d
 - ffmpeg
 
-Install example:
+Install example | 安装示例:
 ```bash
 pip install opencv-python numpy pyqt5 matplotlib open3d
 ```
 
-### Run
+## Run | 运行
 ```bash
 python main.py
 ```
 
-### High-Precision Tracking Workflow
-1. Finish stereo calibration and load the generated YAML file.
-2. Open an experiment video and freeze a clear frame in the `3D Perception` tab.
-3. Click `Start First-Frame Initialization`.
-4. Click `P01 ~ P15` in the left image.
-5. Review and correct the suggested right-image correspondences.
-6. Save the current frame.
-7. Track the next frame automatically, then review low-confidence points.
-8. Export the CSV data and the 3D animation after enough frames are saved.
+## Repository Layout | 目录说明
+- `main.py`: application entry point | 主程序入口
+- `preview_record_tab.py`: preview and recording UI | 预览与录制页面
+- `calib_tab.py`: stereo calibration workflow | 双目标定页面
+- `rectify_tab.py`: rectified measurement workflow | 矫正与测距页面
+- `perception_3d_tab.py`: high-precision tracking and export workflow | 高精度追踪与导出页面
+- `stereo_calibrate_from_video.py`: calibration helper script for recorded stereo videos | 录像标定辅助脚本
+- `utils_img.py`: image splitting helpers | 图像切分辅助函数
+- `config.py`: path, device, and split configuration | 路径、设备与切分配置
 
-### CSV Fields
-- `frame_idx`
-- `timestamp_sec`
-- `point_id`
-- `u_left`, `v_left`
-- `u_right`, `v_right`
-- `x_mm`, `y_mm`, `z_mm`
-- `track_status`
-- `confidence`
+## Status | 当前状态
+The branch `update-readme` contains the new tracking workflow, integrated homepage-style README content, and related configuration updates. It is intended to be reviewed through a pull request before merging.
+
+当前 `update-readme` 分支已经包含新的高精度追踪工作流、项目首页风格 README，以及相关配置更新，适合通过 Pull Request 审核后再合并。
