@@ -4,7 +4,7 @@ import glob
 import cv2
 import numpy as np
 
-# ===================== 你需要改的参数 =====================
+
 VIDEO_PATH = r"E:\research\0\stero\record_20260131_152954.avi"
 OUT_YAML   = r"E:\research\0\stero\stereo_calib.yaml"
 

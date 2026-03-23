@@ -1,438 +1,280 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
+import csv
 import os
+import time
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
-from typing import Optional, Tuple, List
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFileDialog, QLineEdit, QTextEdit, QMessageBox, QComboBox,
-    QSpinBox, QDoubleSpinBox, QGroupBox
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtGui import QImage, QPixmap
 
+from clickable_label import ClickableImageLabel
+from config import RECORD_DIR, SPLIT_GAP, SPLIT_OFFSET, YAML_DIR
+from utils_common import bgr_to_qpixmap, read_mat
 from utils_img import split_sbs
-from utils_common import read_mat, bgr_to_qpixmap
-from config import RECORD_DIR, YAML_DIR, PLY_DIR
 
 
-def disparity_to_color(disp: np.ndarray) -> np.ndarray:
-    """
-    将视差图转换为彩色图像，便于可视化
-    """
-    if disp is None:
-        return None
-    # 归一化到0-255
-    disp_normalized = cv2.normalize(disp, None, 0, 255, cv2.NORM_MINMAX)
-    disp_normalized = np.uint8(disp_normalized)
-    # 应用伪彩色
-    disp_color = cv2.applyColorMap(disp_normalized, cv2.COLORMAP_JET)
-    return disp_color
-
-
-class DisparityThread(QThread):
-    """
-    视差计算线程
-    """
-    disparity_signal = pyqtSignal(np.ndarray)
-    log_signal = pyqtSignal(str)
-
-    def __init__(self, left, right, method='SGBM', min_disparity=0, num_disparities=16, block_size=9):
-        super().__init__()
-        self.left = left
-        self.right = right
-        self.method = method
-        self.min_disparity = min_disparity
-        self.num_disparities = num_disparities
-        self.block_size = block_size
-        self.running = True
-
-    def run(self):
-        try:
-            # 转换为灰度图
-            left_gray = cv2.cvtColor(self.left, cv2.COLOR_BGR2GRAY)
-            right_gray = cv2.cvtColor(self.right, cv2.COLOR_BGR2GRAY)
-
-            if self.method == 'SGBM':
-                # 使用SGBM算法计算视差
-                stereo = cv2.StereoSGBM_create(
-                    minDisparity=self.min_disparity,
-                    numDisparities=self.num_disparities,
-                    blockSize=self.block_size,
-                    P1=8 * 3 * self.block_size ** 2,
-                    P2=32 * 3 * self.block_size ** 2,
-                    disp12MaxDiff=1,
-                    uniquenessRatio=10,
-                    speckleWindowSize=100,
-                    speckleRange=32,
-                    mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY
-                )
-            else:
-                # 使用BM算法计算视差
-                stereo = cv2.StereoBM_create(
-                    numDisparities=self.num_disparities,
-                    blockSize=self.block_size
-                )
-                stereo.setMinDisparity(self.min_disparity)
-
-            # 计算视差
-            disp = stereo.compute(left_gray, right_gray)
-
-            # 处理视差图
-            if self.method == 'SGBM':
-                # SGBM返回的视差需要除以16
-                disp = disp.astype(np.float32) / 16.0
-
-            if self.running:
-                self.disparity_signal.emit(disp)
-                self.log_signal.emit(f"[OK] 视差计算完成，方法: {self.method}, 视差范围: [{disp.min():.2f}, {disp.max():.2f}]")
-        except Exception as e:
-            self.log_signal.emit(f"[ERR] 视差计算失败: {str(e)}")
-
-    def stop(self):
-        self.running = False
-
-
-class PointCloudGenerator:
-    """
-    三维点云生成器
-    """
-    def __init__(self, reprojection_matrix: np.ndarray):
-        """
-        初始化点云生成器
-        
-        参数:
-            reprojection_matrix: 重投影矩阵，由stereoRectify函数计算得到
-        """
-        self.reprojection_matrix = reprojection_matrix
-
-    def generate(self, left_rect: np.ndarray, disparity_map: np.ndarray, mask: Optional[np.ndarray] = None) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """
-        从矫正后的左图和视差图生成三维点云
-        
-        参数:
-            left_rect: 矫正后的左图
-            disparity_map: 视差图
-            mask: 掩码，用于过滤点云
-        
-        返回:
-            三维点云 (N, 3)，单位与标定板方格尺寸一致
-            点云颜色 (N, 3)，RGB格式
-        """
-        if left_rect is None or disparity_map is None:
-            return None, None
-
-        h, w = left_rect.shape[:2]
-        points = []
-        colors = []
-
-        # 遍历图像像素
-        for v in range(0, h, 4):  # 每隔4个像素采样，减少点云数量
-            for u in range(0, w, 4):
-                disparity = disparity_map[v, u]
-                if disparity <= 5:  # 提高视差阈值，过滤掉过小的视差值（噪声）
-                    continue
-
-                # 重投影到三维空间
-                vec = self.reprojection_matrix @ np.array([float(u), float(v), float(disparity), 1.0], dtype=np.float64)
-                W = vec[3]
-                if abs(W) < 1e-12:
-                    continue
-
-                X = vec[0] / W
-                Y = vec[1] / W
-                Z = vec[2] / W
-
-                # 过滤过远或过近的点
-                if Z < 100 or Z > 3000:  # 调整为更合理的距离范围：100mm到3000mm
-                    continue
-
-                # 收集点和颜色
-                points.append([X, Y, Z])
-                colors.append(left_rect[v, u][::-1])  # BGR转RGB
-
-        if len(points) == 0:
-            return None, None
-
-        return np.array(points), np.array(colors)
+@dataclass
+class PointObservation:
+    point_id: int
+    left_xy: Optional[Tuple[float, float]] = None
+    right_xy: Optional[Tuple[float, float]] = None
+    xyz: Optional[np.ndarray] = None
+    status: str = "pending"
+    confidence: float = 0.0
 
 
 class Perception3DTab(QWidget):
     def __init__(self):
         super().__init__()
-        self.reprojection_matrix: Optional[np.ndarray] = None
         self.image_width: Optional[int] = None
         self.image_height: Optional[int] = None
         self.map1x: Optional[np.ndarray] = None
         self.map1y: Optional[np.ndarray] = None
         self.map2x: Optional[np.ndarray] = None
         self.map2y: Optional[np.ndarray] = None
+        self.proj_left: Optional[np.ndarray] = None
+        self.proj_right: Optional[np.ndarray] = None
 
         self.video_capture: Optional[cv2.VideoCapture] = None
+        self.video_fps: float = 30.0
+        self.frame_index: int = -1
         self.is_playing: bool = False
+
         self.current_frame: Optional[np.ndarray] = None
         self.left_rectified: Optional[np.ndarray] = None
         self.right_rectified: Optional[np.ndarray] = None
-        self.disparity_map: Optional[np.ndarray] = None
-        self.point_cloud: Optional[np.ndarray] = None
-        self.point_colors: Optional[np.ndarray] = None
+        self.latest_left: Optional[np.ndarray] = None
+        self.latest_right: Optional[np.ndarray] = None
 
-        self.disparity_thread: Optional[DisparityThread] = None
+        self.point_count: int = 15
+        self.current_points: List[PointObservation] = []
+        self.saved_frames: Dict[int, List[PointObservation]] = {}
+        self.previous_saved_points: Optional[List[PointObservation]] = None
+        self.previous_left_gray: Optional[np.ndarray] = None
+        self.selected_point_index: int = 0
+        self.initialized: bool = False
 
         self._init_ui()
+        self._reset_current_points()
 
         self.play_timer = QTimer()
         self.play_timer.timeout.connect(self._on_play_tick)
         self._apply_display_fps()
 
     def _init_ui(self):
-        # 创建滚动区域
-        from PyQt5.QtWidgets import QScrollArea
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        
-        # 主容器
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         container = QWidget()
         lay = QVBoxLayout(container)
-
-        # 添加各个部分
         self._create_yaml_section(lay)
         self._create_video_section(lay)
-        self._create_parameter_section(lay)
+        self._create_tracking_section(lay)
         self._create_view_section(lay)
         self._create_log_section(lay)
+        scroll.setWidget(container)
+        root = QVBoxLayout(self)
+        root.addWidget(scroll)
 
-        # 设置滚动区域
-        scroll_area.setWidget(container)
-        main_lay = QVBoxLayout(self)
-        main_lay.addWidget(scroll_area)
-
-    def _create_yaml_section(self, layout: QVBoxLayout) -> None:
-        """创建YAML配置部分"""
-        r1 = QHBoxLayout()
+    def _create_yaml_section(self, layout: QVBoxLayout):
+        row = QHBoxLayout()
         self.yaml_edit = QLineEdit()
         self.yaml_edit.setPlaceholderText("选择 stereo_calib_*.yaml")
-        r1.addWidget(self.yaml_edit)
+        row.addWidget(self.yaml_edit)
+        btn_pick = QPushButton("选YAML")
+        btn_pick.clicked.connect(self.pick_yaml)
+        row.addWidget(btn_pick)
+        btn_load = QPushButton("加载YAML")
+        btn_load.clicked.connect(self.load_yaml)
+        row.addWidget(btn_load)
+        layout.addLayout(row)
 
-        b1 = QPushButton("选YAML")
-        b1.clicked.connect(self.pick_yaml)
-        r1.addWidget(b1)
-
-        bload = QPushButton("加载YAML")
-        bload.clicked.connect(self.load_yaml)
-        r1.addWidget(bload)
-        layout.addLayout(r1)
-
-    def _create_video_section(self, layout: QVBoxLayout) -> None:
-        """创建视频控制部分"""
-        r2 = QHBoxLayout()
+    def _create_video_section(self, layout: QVBoxLayout):
+        row = QHBoxLayout()
         self.video_edit = QLineEdit()
         self.video_edit.setPlaceholderText("选择一个 record_*.avi")
-        r2.addWidget(self.video_edit)
-
-        b2 = QPushButton("选视频")
-        b2.clicked.connect(self.pick_video)
-        r2.addWidget(b2)
-
-        b_open = QPushButton("打开视频")
-        b_open.clicked.connect(self.open_video)
-        r2.addWidget(b_open)
-
-        self.btn_play = QPushButton("▶ 播放")
+        row.addWidget(self.video_edit)
+        btn_pick = QPushButton("选视频")
+        btn_pick.clicked.connect(self.pick_video)
+        row.addWidget(btn_pick)
+        btn_open = QPushButton("打开视频")
+        btn_open.clicked.connect(self.open_video)
+        row.addWidget(btn_open)
+        self.btn_play = QPushButton("播放")
         self.btn_play.clicked.connect(self.toggle_play)
-        r2.addWidget(self.btn_play)
+        row.addWidget(self.btn_play)
+        btn_step = QPushButton("步进 +1 帧")
+        btn_step.clicked.connect(self.step_one)
+        row.addWidget(btn_step)
+        btn_freeze = QPushButton("冻结当前帧")
+        btn_freeze.clicked.connect(self.freeze_current_frame)
+        row.addWidget(btn_freeze)
+        row.addWidget(QLabel("显示FPS:"))
+        self.disp_fps = QSpinBox()
+        self.disp_fps.setRange(1, 120)
+        self.disp_fps.setValue(20)
+        self.disp_fps.valueChanged.connect(self._apply_display_fps)
+        row.addWidget(self.disp_fps)
+        layout.addLayout(row)
 
-        b_step = QPushButton("步进 +1帧")
-        b_step.clicked.connect(self.step_one)
-        r2.addWidget(b_step)
+    def _create_tracking_section(self, layout: QVBoxLayout):
+        group = QGroupBox("高精度关键点追踪")
+        outer = QVBoxLayout(group)
 
-        b_freeze = QPushButton("冻结为处理帧")
-        b_freeze.clicked.connect(self.freeze_for_process)
-        r2.addWidget(b_freeze)
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("关键点数:"))
+        self.point_count_spin = QSpinBox()
+        self.point_count_spin.setRange(2, 50)
+        self.point_count_spin.setValue(self.point_count)
+        self.point_count_spin.valueChanged.connect(self.on_point_count_changed)
+        row1.addWidget(self.point_count_spin)
+        row1.addWidget(QLabel("当前点:"))
+        self.point_index_spin = QSpinBox()
+        self.point_index_spin.setRange(1, self.point_count)
+        self.point_index_spin.setValue(1)
+        self.point_index_spin.valueChanged.connect(self.on_selected_point_changed)
+        row1.addWidget(self.point_index_spin)
+        btn_prev = QPushButton("上一点")
+        btn_prev.clicked.connect(lambda: self._shift_selected_point(-1))
+        row1.addWidget(btn_prev)
+        btn_next = QPushButton("下一点")
+        btn_next.clicked.connect(lambda: self._shift_selected_point(1))
+        row1.addWidget(btn_next)
+        btn_init = QPushButton("开始首帧初始化")
+        btn_init.clicked.connect(self.start_manual_init)
+        row1.addWidget(btn_init)
+        btn_clear = QPushButton("清当前点")
+        btn_clear.clicked.connect(self.clear_selected_point)
+        row1.addWidget(btn_clear)
+        btn_clear_frame = QPushButton("清当前帧点")
+        btn_clear_frame.clicked.connect(self.clear_current_points)
+        row1.addWidget(btn_clear_frame)
+        outer.addLayout(row1)
 
-        layout.addLayout(r2)
+        row2 = QHBoxLayout()
+        btn_save = QPushButton("保存当前帧")
+        btn_save.clicked.connect(self.save_current_frame)
+        row2.addWidget(btn_save)
+        btn_track = QPushButton("自动跟踪下一帧")
+        btn_track.clicked.connect(self.track_next_frame)
+        row2.addWidget(btn_track)
+        btn_csv = QPushButton("导出CSV")
+        btn_csv.clicked.connect(self.export_csv)
+        row2.addWidget(btn_csv)
+        btn_anim = QPushButton("导出3D动画")
+        btn_anim.clicked.connect(self.export_animation)
+        row2.addWidget(btn_anim)
+        outer.addLayout(row2)
 
-    def _create_parameter_section(self, layout: QVBoxLayout) -> None:
-        """创建视差计算参数部分"""
-        param_group = QGroupBox("视差计算参数")
-        param_lay = QVBoxLayout()
+        self.status_label = QLabel(
+            "高精度流程: 冻结清晰首帧 -> 左图逐个点击 P01~P15 -> 系统给右图建议点 -> 在右图修正 -> 保存当前帧 -> 自动跟踪下一帧并复核。"
+        )
+        self.status_label.setWordWrap(True)
+        outer.addWidget(self.status_label)
+        layout.addWidget(group)
 
-        # 参数说明
-        info_label = QLabel("参数选择建议：")
-        info_text = QTextEdit()
-        info_text.setReadOnly(True)
-        info_text.setFixedHeight(100)
-        info_text.setPlainText("纹理丰富场景：块大小 5-7，视差数量 32-64\n" +
-                              "纹理较少场景：块大小 11-15，视差数量 64-128\n" +
-                              "近距离场景：最小视差 0-10，视差数量适中\n" +
-                              "远距离场景：最小视差 10-20，视差数量较大")
-        param_lay.addWidget(info_label)
-        param_lay.addWidget(info_text)
-
-        # 参数控件
-        control_lay = QHBoxLayout()
-        control_lay.addWidget(QLabel("方法:"))
-        self.disp_method = QComboBox()
-        self.disp_method.addItems(["SGBM", "BM"])
-        control_lay.addWidget(self.disp_method)
-
-        control_lay.addWidget(QLabel("最小视差:"))
-        self.min_disparity = QSpinBox()
-        self.min_disparity.setRange(0, 100)
-        self.min_disparity.setValue(0)
-        control_lay.addWidget(self.min_disparity)
-
-        control_lay.addWidget(QLabel("视差数量:"))
-        self.num_disparities = QSpinBox()
-        self.num_disparities.setRange(16, 256)
-        self.num_disparities.setSingleStep(16)
-        self.num_disparities.setValue(16)
-        control_lay.addWidget(self.num_disparities)
-
-        control_lay.addWidget(QLabel("块大小:"))
-        self.block_size = QSpinBox()
-        self.block_size.setRange(5, 25)
-        self.block_size.setSingleStep(2)
-        self.block_size.setValue(9)
-        control_lay.addWidget(self.block_size)
-
-        param_lay.addLayout(control_lay)
-
-        # 预设按钮
-        preset_lay = QHBoxLayout()
-        btn_preset1 = QPushButton("纹理丰富场景")
-        btn_preset1.clicked.connect(lambda: self.apply_preset(0))
-        preset_lay.addWidget(btn_preset1)
-
-        btn_preset2 = QPushButton("纹理较少场景")
-        btn_preset2.clicked.connect(lambda: self.apply_preset(1))
-        preset_lay.addWidget(btn_preset2)
-
-        btn_preset3 = QPushButton("近距离场景")
-        btn_preset3.clicked.connect(lambda: self.apply_preset(2))
-        preset_lay.addWidget(btn_preset3)
-
-        btn_preset4 = QPushButton("远距离场景")
-        btn_preset4.clicked.connect(lambda: self.apply_preset(3))
-        preset_lay.addWidget(btn_preset4)
-
-        param_lay.addLayout(preset_lay)
-
-        # 操作按钮
-        action_lay = QHBoxLayout()
-        btn_compute_disp = QPushButton("计算视差")
-        btn_compute_disp.clicked.connect(self.compute_disparity)
-        action_lay.addWidget(btn_compute_disp)
-
-        btn_generate_pc = QPushButton("生成点云")
-        btn_generate_pc.clicked.connect(self.generate_point_cloud)
-        action_lay.addWidget(btn_generate_pc)
-
-        btn_view_pc = QPushButton("查看点云")
-        btn_view_pc.clicked.connect(self.view_point_cloud)
-        action_lay.addWidget(btn_view_pc)
-
-        param_lay.addLayout(action_lay)
-
-        param_group.setLayout(param_lay)
-        layout.addWidget(param_group)
-
-    def _create_view_section(self, layout: QVBoxLayout) -> None:
-        """创建视图显示部分"""
-        view_row = QHBoxLayout()
-
-        # 左图
-        self.viewL = QLabel("左图")
-        self.viewL.setMinimumSize(420, 480)
+    def _create_view_section(self, layout: QVBoxLayout):
+        row = QHBoxLayout()
+        self.viewL = ClickableImageLabel("左图: 设置/修正当前点")
+        self.viewL.setMinimumSize(640, 480)
         self.viewL.setStyleSheet("border:1px solid gray; background:black;")
-        view_row.addWidget(self.viewL, 1)
-
-        # 右图
-        self.viewR = QLabel("右图")
-        self.viewR.setMinimumSize(420, 480)
+        self.viewL.clicked.connect(self.on_click_left)
+        row.addWidget(self.viewL, 1)
+        self.viewR = ClickableImageLabel("右图: 修正当前点")
+        self.viewR.setMinimumSize(640, 480)
         self.viewR.setStyleSheet("border:1px solid gray; background:black;")
-        view_row.addWidget(self.viewR, 1)
+        self.viewR.clicked.connect(self.on_click_right)
+        row.addWidget(self.viewR, 1)
+        layout.addLayout(row)
 
-        # 视差图
-        self.viewD = QLabel("视差图")
-        self.viewD.setMinimumSize(420, 480)
-        self.viewD.setStyleSheet("border:1px solid gray; background:black;")
-        view_row.addWidget(self.viewD, 1)
-
-        layout.addLayout(view_row)
-
-    def _create_log_section(self, layout: QVBoxLayout) -> None:
-        """创建日志显示部分"""
+    def _create_log_section(self, layout: QVBoxLayout):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setFixedHeight(220)
+        self.log.setFixedHeight(240)
         layout.addWidget(self.log)
 
-    def log_add(self, s):
-        self.log.append(s)
+    def log_add(self, text: str):
+        self.log.append(text)
 
     def pick_yaml(self):
-        p, _ = QFileDialog.getOpenFileName(self, "选择YAML", YAML_DIR, "YAML (*.yaml *.yml)")
-        if p:
-            self.yaml_edit.setText(p)
+        path, _ = QFileDialog.getOpenFileName(self, "选择YAML", YAML_DIR, "YAML (*.yaml *.yml)")
+        if path:
+            self.yaml_edit.setText(path)
 
     def pick_video(self):
-        p, _ = QFileDialog.getOpenFileName(self, "选择视频", RECORD_DIR, "Video (*.avi *.mp4 *.mkv)")
-        if p:
-            self.video_edit.setText(p)
+        path, _ = QFileDialog.getOpenFileName(self, "选择视频", RECORD_DIR, "Video (*.avi *.mp4 *.mkv)")
+        if path:
+            self.video_edit.setText(path)
 
     def load_yaml(self):
         yaml_path = self.yaml_edit.text().strip()
         if not yaml_path or not os.path.isfile(yaml_path):
             QMessageBox.warning(self, "错误", "请选择有效 YAML")
             return
-
         try:
             fs = cv2.FileStorage(yaml_path, cv2.FILE_STORAGE_READ)
             self.image_width = int(fs.getNode("image_width").real())
             self.image_height = int(fs.getNode("image_height").real())
-            K1 = read_mat(fs, "K1"); D1 = read_mat(fs, "D1")
-            K2 = read_mat(fs, "K2"); D2 = read_mat(fs, "D2")
-            R1 = read_mat(fs, "R1"); P1 = read_mat(fs, "P1")
-            R2 = read_mat(fs, "R2"); P2 = read_mat(fs, "P2")
-            self.reprojection_matrix = read_mat(fs, "Q")
+            k1 = read_mat(fs, "K1")
+            d1 = read_mat(fs, "D1")
+            k2 = read_mat(fs, "K2")
+            d2 = read_mat(fs, "D2")
+            r1 = read_mat(fs, "R1")
+            p1 = read_mat(fs, "P1")
+            r2 = read_mat(fs, "R2")
+            p2 = read_mat(fs, "P2")
             fs.release()
-
-            self.map1x, self.map1y = cv2.initUndistortRectifyMap(K1, D1, R1, P1, (self.image_width, self.image_height), cv2.CV_16SC2)
-            self.map2x, self.map2y = cv2.initUndistortRectifyMap(K2, D2, R2, P2, (self.image_width, self.image_height), cv2.CV_16SC2)
-
-            self.log_add(f"[OK] YAML 加载完成. 图像尺寸=({self.image_width}x{self.image_height}), 矫正映射已预计算.")
-            QMessageBox.information(self, "完成", "YAML 加载完成，矫正映射已预计算。")
-        except Exception as e:
-            self.log_add(f"[ERR] 加载 YAML 失败: {str(e)}")
-            QMessageBox.warning(self, "错误", f"加载 YAML 失败: {str(e)}")
+            self.proj_left = p1
+            self.proj_right = p2
+            self.map1x, self.map1y = cv2.initUndistortRectifyMap(k1, d1, r1, p1, (self.image_width, self.image_height), cv2.CV_16SC2)
+            self.map2x, self.map2y = cv2.initUndistortRectifyMap(k2, d2, r2, p2, (self.image_width, self.image_height), cv2.CV_16SC2)
+            self.log_add(f"[OK] YAML 加载完成. 图像尺寸=({self.image_width}x{self.image_height}), 已准备高精度三角化参数。")
+            QMessageBox.information(self, "完成", "YAML 加载完成。")
+        except Exception as exc:
+            self.log_add(f"[ERR] YAML 加载失败: {exc}")
+            QMessageBox.warning(self, "错误", f"YAML 加载失败: {exc}")
 
     def open_video(self):
         video_path = self.video_edit.text().strip()
         if not video_path or not os.path.isfile(video_path):
             QMessageBox.warning(self, "错误", "请选择有效视频")
             return
-        if self.map1x is None or self.reprojection_matrix is None:
-            QMessageBox.warning(self, "错误", "请先加载 YAML（预计算矫正映射）")
+        if self.map1x is None or self.proj_left is None or self.proj_right is None:
+            QMessageBox.warning(self, "错误", "请先加载 YAML")
             return
-
         self._close_video_capture()
         self.video_capture = cv2.VideoCapture(video_path)
         if not self.video_capture.isOpened():
             self.video_capture = None
             QMessageBox.warning(self, "错误", "无法打开视频")
             return
-
+        self.video_fps = float(self.video_capture.get(cv2.CAP_PROP_FPS) or 30.0)
+        self.frame_index = -1
         self.is_playing = False
-        self.btn_play.setText("▶ 播放")
-
-        self.log_add("[OK] 视频打开成功。")
+        self.btn_play.setText("播放")
+        self.reset_tracking_session(keep_frame=True)
+        self.log_add(f"[OK] 视频打开成功. FPS={self.video_fps:.3f}")
         self._read_and_show_one_frame()
 
     def _apply_display_fps(self):
-        fps = 30
-        interval_ms = max(1, int(round(1000.0 / float(fps))))
-        self.play_timer.setInterval(interval_ms)
+        fps = int(self.disp_fps.value())
+        self.play_timer.setInterval(max(1, int(round(1000.0 / float(fps)))))
         if self.is_playing:
             self.play_timer.start()
 
@@ -440,16 +282,12 @@ class Perception3DTab(QWidget):
         if self.video_capture is None:
             QMessageBox.warning(self, "错误", "请先打开视频")
             return
-        if self.map1x is None:
-            QMessageBox.warning(self, "错误", "请先加载 YAML")
-            return
-
         self.is_playing = not self.is_playing
         if self.is_playing:
-            self.btn_play.setText("⏸ 暂停")
+            self.btn_play.setText("暂停")
             self.play_timer.start()
         else:
-            self.btn_play.setText("▶ 播放")
+            self.btn_play.setText("播放")
             self.play_timer.stop()
 
     def step_one(self):
@@ -458,32 +296,27 @@ class Perception3DTab(QWidget):
             return
         if self.is_playing:
             self.is_playing = False
-            self.btn_play.setText("▶ 播放")
+            self.btn_play.setText("播放")
             self.play_timer.stop()
         self._read_and_show_one_frame()
 
-    def freeze_for_process(self):
+    def freeze_current_frame(self):
         if self.left_rectified is None or self.right_rectified is None:
-            QMessageBox.warning(self, "错误", "当前没有可用帧（请先播放/步进）")
+            QMessageBox.warning(self, "错误", "当前没有可用帧")
             return
-
         if self.is_playing:
             self.is_playing = False
-            self.btn_play.setText("▶ 播放")
+            self.btn_play.setText("播放")
             self.play_timer.stop()
-
-        self.log_add("[OK] 已冻结当前帧为处理帧。")
-        self._show_latest_lr()
+        self.log_add(f"[OK] 已冻结当前帧 frame={self.frame_index}，可以开始或修正关键点。")
+        self._refresh_views()
 
     def _on_play_tick(self):
-        if not self.is_playing:
-            return
-        ok = self._read_and_show_one_frame()
-        if not ok:
+        if self.is_playing and not self._read_and_show_one_frame():
             self.is_playing = False
-            self.btn_play.setText("▶ 播放")
+            self.btn_play.setText("播放")
             self.play_timer.stop()
-            self.log_add("[INFO] 视频到末尾，已停止。")
+            self.log_add("[INFO] 视频已播放到末尾。")
 
     def _read_and_show_one_frame(self) -> bool:
         if self.video_capture is None:
@@ -491,14 +324,14 @@ class Perception3DTab(QWidget):
         ret, frame = self.video_capture.read()
         if not ret or frame is None:
             return False
-
         self.current_frame = frame
+        self.frame_index = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)) - 1
         self._rectify_current_frame()
-        self._show_latest_lr()
+        self._refresh_views()
         return True
 
     def _rectify_current_frame(self):
-        left, right = split_sbs(self.current_frame, 0, 0)
+        left, right = split_sbs(self.current_frame, SPLIT_OFFSET, SPLIT_GAP)
         self.left_rectified = cv2.remap(left, self.map1x, self.map1y, cv2.INTER_LINEAR)
         self.right_rectified = cv2.remap(right, self.map2x, self.map2y, cv2.INTER_LINEAR)
 
@@ -513,262 +346,400 @@ class Perception3DTab(QWidget):
                 pass
         self.video_capture = None
 
-    def _show_latest_lr(self):
-        if self.left_rectified is not None:
-            pmL = bgr_to_qpixmap(self.left_rectified)
-            self.viewL.setPixmap(pmL.scaled(self.viewL.width(), self.viewL.height(), aspectRatioMode=1))
-        if self.right_rectified is not None:
-            pmR = bgr_to_qpixmap(self.right_rectified)
-            self.viewR.setPixmap(pmR.scaled(self.viewR.width(), self.viewR.height(), aspectRatioMode=1))
-        if self.disparity_map is not None:
-            disp_color = disparity_to_color(self.disparity_map)
-            if disp_color is not None:
-                pmD = bgr_to_qpixmap(disp_color)
-                self.viewD.setPixmap(pmD.scaled(self.viewD.width(), self.viewD.height(), aspectRatioMode=1))
+    def reset_tracking_session(self, keep_frame: bool = False):
+        self.saved_frames = {}
+        self.previous_saved_points = None
+        self.previous_left_gray = None
+        self.initialized = False
+        self._reset_current_points()
+        if not keep_frame:
+            self.left_rectified = None
+            self.right_rectified = None
+            self.latest_left = None
+            self.latest_right = None
+        self.log_add("[INFO] 已重置追踪会话。")
+        self._refresh_views()
 
-    def compute_disparity(self):
+    def _reset_current_points(self):
+        self.current_points = [PointObservation(point_id=i + 1) for i in range(self.point_count)]
+        self.selected_point_index = 0
+        if hasattr(self, "point_index_spin"):
+            self.point_index_spin.blockSignals(True)
+            self.point_index_spin.setRange(1, self.point_count)
+            self.point_index_spin.setValue(1)
+            self.point_index_spin.blockSignals(False)
+
+    def on_point_count_changed(self, value: int):
+        self.point_count = int(value)
+        self._reset_current_points()
+        self._refresh_views()
+        self.log_add(f"[INFO] 关键点数已设置为 {self.point_count}。")
+
+    def on_selected_point_changed(self, value: int):
+        self.selected_point_index = int(value) - 1
+        self._refresh_views()
+
+    def _shift_selected_point(self, delta: int):
+        new_index = min(max(self.selected_point_index + delta, 0), self.point_count - 1)
+        self.selected_point_index = new_index
+        self.point_index_spin.blockSignals(True)
+        self.point_index_spin.setValue(new_index + 1)
+        self.point_index_spin.blockSignals(False)
+        self._refresh_views()
+
+    def start_manual_init(self):
         if self.left_rectified is None or self.right_rectified is None:
-            QMessageBox.warning(self, "错误", "当前没有可用帧（请先播放/步进）")
+            QMessageBox.warning(self, "错误", "请先冻结一帧清晰画面")
             return
+        self.saved_frames = {}
+        self.previous_saved_points = None
+        self.previous_left_gray = None
+        self.initialized = False
+        self._reset_current_points()
+        self.log_add("[OK] 已进入首帧初始化。请依次在左图点击各点，再到右图精修对应点。")
+        self._refresh_views()
 
-        # 停止之前的线程
-        if self.disparity_thread is not None and self.disparity_thread.isRunning():
-            self.disparity_thread.stop()
-            self.disparity_thread.wait()
+    def clear_selected_point(self):
+        obs = self.current_points[self.selected_point_index]
+        obs.left_xy = None
+        obs.right_xy = None
+        obs.xyz = None
+        obs.status = "pending"
+        obs.confidence = 0.0
+        self.log_add(f"[INFO] 已清除 P{obs.point_id:02d}。")
+        self._refresh_views()
 
-        # 启动新的视差计算线程
-        method = self.disp_method.currentText()
-        min_disparity = self.min_disparity.value()
-        num_disparities = self.num_disparities.value()
-        block_size = self.block_size.value()
-
-        self.log_add(f"[INFO] 开始计算视差，方法: {method}, 最小视差: {min_disparity}, 视差数量: {num_disparities}, 块大小: {block_size}")
-
-        self.disparity_thread = DisparityThread(
-            self.left_rectified, self.right_rectified, method, min_disparity, num_disparities, block_size
-        )
-        self.disparity_thread.disparity_signal.connect(self.on_disparity_computed)
-        self.disparity_thread.log_signal.connect(self.log_add)
-        self.disparity_thread.start()
-
-    def on_disparity_computed(self, disp):
-        self.disparity_map = disp
-        self._show_latest_lr()
-
-    def generate_point_cloud(self):
-        if self.reprojection_matrix is None:
-            QMessageBox.warning(self, "错误", "请先加载 YAML")
+    def clear_current_points(self):
+        self._reset_current_points()
+        self.log_add("[INFO] 已清空当前帧的全部关键点。")
+        self._refresh_views()
+    def on_click_left(self, u: int, v: int):
+        if self.left_rectified is None or self.right_rectified is None:
+            self.log_add("[WARN] 当前没有可点击的帧。")
             return
-        if self.left_rectified is None:
-            QMessageBox.warning(self, "错误", "当前没有可用帧")
+        if self.is_playing:
+            self.log_add("[HINT] 先暂停或冻结当前帧再修正点。")
             return
-        if self.disparity_map is None:
-            QMessageBox.warning(self, "错误", "请先计算视差")
-            return
-
-        try:
-            # 生成点云
-            generator = PointCloudGenerator(self.reprojection_matrix)
-            points, colors = generator.generate(self.left_rectified, self.disparity_map)
-
-            if points is None or len(points) == 0:
-                self.log_add("[ERR] 点云生成失败：没有有效的点")
-                QMessageBox.warning(self, "错误", "点云生成失败：没有有效的点")
-                return
-
-            # 点云后处理：过滤离群点
-            if len(points) > 1000:
-                self.log_add("[INFO] 进行点云后处理")
-                
-                # 计算点云的均值和标准差
-                mean = np.mean(points, axis=0)
-                std = np.std(points, axis=0)
-                
-                # 过滤离群点（距离均值超过3个标准差的点）
-                dist = np.linalg.norm(points - mean, axis=1)
-                mask = dist < 3 * np.max(std)
-                filtered_points = points[mask]
-                filtered_colors = colors[mask]
-                
-                if len(filtered_points) < len(points):
-                    self.log_add(f"[INFO] 过滤后点云数量: {len(filtered_points)} (原: {len(points)})")
-                    points = filtered_points
-                    colors = filtered_colors
-
-            self.point_cloud = points
-            self.point_colors = colors
-
-            # 保存点云为PLY格式
-            self.save_point_cloud()
-
-            self.log_add(f"[OK] 点云生成成功，点数: {len(points)}")
-            QMessageBox.information(self, "完成", f"点云生成成功，点数: {len(points)}")
-        except Exception as e:
-            self.log_add(f"[ERR] 点云生成失败: {str(e)}")
-            QMessageBox.warning(self, "错误", f"点云生成失败: {str(e)}")
-
-    def apply_preset(self, preset_id):
-        """
-        应用预设参数配置
-        
-        参数:
-            preset_id: 预设ID
-                0: 纹理丰富场景
-                1: 纹理较少场景
-                2: 近距离场景
-                3: 远距离场景
-        """
-        presets = {
-            0: {  # 纹理丰富场景
-                'method': 'SGBM',
-                'min_disparity': 0,
-                'num_disparities': 64,
-                'block_size': 7
-            },
-            1: {  # 纹理较少场景
-                'method': 'SGBM',
-                'min_disparity': 0,
-                'num_disparities': 128,
-                'block_size': 15
-            },
-            2: {  # 近距离场景
-                'method': 'SGBM',
-                'min_disparity': 0,
-                'num_disparities': 64,
-                'block_size': 9
-            },
-            3: {  # 远距离场景
-                'method': 'SGBM',
-                'min_disparity': 10,
-                'num_disparities': 128,
-                'block_size': 11
-            }
-        }
-
-        if preset_id in presets:
-            preset = presets[preset_id]
-            self.disp_method.setCurrentText(preset['method'])
-            self.min_disparity.setValue(preset['min_disparity'])
-            self.num_disparities.setValue(preset['num_disparities'])
-            self.block_size.setValue(preset['block_size'])
-            
-            preset_names = ['纹理丰富场景', '纹理较少场景', '近距离场景', '远距离场景']
-            self.log_add(f"[OK] 应用预设参数: {preset_names[preset_id]}")
-
-    def view_point_cloud(self):
-        """
-        查看点云
-        如果当前有生成的点云，直接查看
-        否则打开文件选择对话框，选择要查看的PLY文件
-        """
-        try:
-            import open3d as o3d
-        except ImportError:
-            self.log_add("[ERR] Open3D 库未安装，请运行: pip install open3d")
-            QMessageBox.warning(self, "错误", "Open3D 库未安装，请运行: pip install open3d")
-            return
-
-        pcd = None
-
-        # 如果当前有生成的点云，直接使用
-        if self.point_cloud is not None and self.point_colors is not None:
-            self.log_add("[INFO] 查看当前生成的点云")
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(self.point_cloud)
-            pcd.colors = o3d.utility.Vector3dVector(self.point_colors / 255.0)  # 归一化到0-1
+        obs = self.current_points[self.selected_point_index]
+        obs.left_xy = (float(u), float(v))
+        obs.status = "manual_left"
+        match = self._match_right_point(float(u), float(v), self._previous_disparity(obs.point_id))
+        if match is not None:
+            obs.right_xy, obs.confidence = match
+            obs.status = "manual_left+auto_right"
+        self._update_point_3d(obs)
+        self.log_add(self._point_summary(obs, prefix="[PT] "))
+        if obs.right_xy is not None and self.selected_point_index < self.point_count - 1:
+            self._shift_selected_point(1)
         else:
-            # 打开文件选择对话框，选择PLY文件
-            options = QFileDialog.Options()
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "选择点云文件", PLY_DIR, "PLY文件 (*.ply);;所有文件 (*.*)", options=options
-            )
+            self._refresh_views()
 
-            if not file_path:
-                return
-
-            self.log_add(f"[INFO] 加载点云文件: {file_path}")
-            try:
-                pcd = o3d.io.read_point_cloud(file_path)
-                if pcd.is_empty():
-                    self.log_add("[ERR] 点云文件为空")
-                    QMessageBox.warning(self, "错误", "点云文件为空")
-                    return
-            except Exception as e:
-                self.log_add(f"[ERR] 加载点云文件失败: {str(e)}")
-                QMessageBox.warning(self, "错误", f"加载点云文件失败: {str(e)}")
-                return
-
-        if pcd is not None:
-            # 点云下采样，减少点云数量
-            if len(pcd.points) > 50000:
-                self.log_add("[INFO] 点云数量过多，进行下采样")
-                pcd = pcd.voxel_down_sample(voxel_size=2.0)
-                self.log_add(f"[INFO] 下采样后点云数量: {len(pcd.points)}")
-
-            # 统计滤波，去除离群点
-            try:
-                pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-                self.log_add(f"[INFO] 统计滤波后点云数量: {len(pcd.points)}")
-            except Exception as e:
-                self.log_add(f"[WARN] 统计滤波失败: {str(e)}")
-
-            # 半径滤波，去除稀疏区域的点
-            try:
-                pcd, ind = pcd.remove_radius_outlier(nb_points=16, radius=5.0)
-                self.log_add(f"[INFO] 半径滤波后点云数量: {len(pcd.points)}")
-            except Exception as e:
-                self.log_add(f"[WARN] 半径滤波失败: {str(e)}")
-
-            # 创建可视化窗口
-            vis = o3d.visualization.Visualizer()
-            vis.create_window(window_name="点云查看器", width=800, height=600)
-            vis.add_geometry(pcd)
-
-            # 添加坐标系
-            coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=100.0, origin=[0, 0, 0])
-            vis.add_geometry(coordinate_frame)
-
-            # 设置点大小和背景
-            render_option = vis.get_render_option()
-            render_option.point_size = 1.0  # 减小点大小，减少重叠
-            render_option.background_color = [0.0, 0.0, 0.0]  # 黑色背景
-
-            # 运行可视化
-            self.log_add("[OK] 点云查看器已打开")
-            vis.run()
-            vis.destroy_window()
-
-    def save_point_cloud(self):
-        """
-        保存点云为PLY格式
-        """
-        if self.point_cloud is None:
+    def on_click_right(self, u: int, v: int):
+        if self.right_rectified is None:
+            self.log_add("[WARN] 当前没有可点击的帧。")
             return
+        if self.is_playing:
+            self.log_add("[HINT] 先暂停或冻结当前帧再修正点。")
+            return
+        obs = self.current_points[self.selected_point_index]
+        obs.right_xy = (float(u), float(v))
+        if obs.left_xy is not None:
+            obs.status = "manual_pair" if obs.status == "manual_left" else "manual_corrected"
+        self._update_point_3d(obs)
+        self.log_add(self._point_summary(obs, prefix="[PT] "))
+        if self.selected_point_index < self.point_count - 1:
+            self._shift_selected_point(1)
+        else:
+            self._refresh_views()
 
-        import time
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        ply_path = os.path.join(PLY_DIR, f"point_cloud_{ts}.ply")
+    def _previous_disparity(self, point_id: int) -> Optional[float]:
+        if not self.previous_saved_points:
+            return None
+        prev = self.previous_saved_points[point_id - 1]
+        if prev.left_xy is None or prev.right_xy is None:
+            return None
+        return float(prev.left_xy[0] - prev.right_xy[0])
 
+    def _match_right_point(self, u_left: float, v_left: float, prev_disparity: Optional[float], search_half_width: int = 40, row_half_height: int = 3, patch_half_size: int = 8) -> Optional[Tuple[Tuple[float, float], float]]:
+        if self.left_rectified is None or self.right_rectified is None:
+            return None
+        left_gray = cv2.cvtColor(self.left_rectified, cv2.COLOR_BGR2GRAY)
+        right_gray = cv2.cvtColor(self.right_rectified, cv2.COLOR_BGR2GRAY)
+        h, w = left_gray.shape[:2]
+        u = int(round(u_left))
+        v = int(round(v_left))
+        x0, x1 = u - patch_half_size, u + patch_half_size + 1
+        y0, y1 = v - patch_half_size, v + patch_half_size + 1
+        if x0 < 0 or y0 < 0 or x1 > w or y1 > h:
+            return None
+        template = left_gray[y0:y1, x0:x1]
+        if prev_disparity is None:
+            center_x = max(patch_half_size, min(w - patch_half_size - 1, u - 60))
+            min_x = max(patch_half_size, 0)
+            max_x = min(u - patch_half_size - 1, w - patch_half_size - 1)
+        else:
+            center_x = int(round(u_left - prev_disparity))
+            min_x = max(patch_half_size, center_x - search_half_width)
+            max_x = min(u - patch_half_size - 1, center_x + search_half_width)
+        if max_x <= min_x:
+            return None
+        min_y = max(patch_half_size, v - row_half_height)
+        max_y = min(h - patch_half_size - 1, v + row_half_height)
+        if max_y <= min_y:
+            return None
+        search = right_gray[min_y - patch_half_size:max_y + patch_half_size + 1, min_x - patch_half_size:max_x + patch_half_size + 1]
+        if search.shape[0] < template.shape[0] or search.shape[1] < template.shape[1]:
+            return None
+        result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        match_x = min_x + max_loc[0]
+        match_y = min_y + max_loc[1]
+        return (float(match_x), float(match_y)), float(max_val)
+
+    def _update_point_3d(self, obs: PointObservation):
+        if obs.left_xy is None or obs.right_xy is None or self.proj_left is None or self.proj_right is None:
+            obs.xyz = None
+            self._refresh_views()
+            return
+        u_l, v_l = obs.left_xy
+        u_r, v_r = obs.right_xy
+        disparity = u_l - u_r
+        if disparity <= 0.1:
+            obs.xyz = None
+            self.log_add(f"[WARN] P{obs.point_id:02d} disparity={disparity:.3f}px，请修正右图点。")
+            self._refresh_views()
+            return
+        pts_l = np.array([[u_l], [v_l]], dtype=np.float64)
+        pts_r = np.array([[u_r], [v_r]], dtype=np.float64)
+        homog = cv2.triangulatePoints(self.proj_left, self.proj_right, pts_l, pts_r)
+        w = homog[3, 0]
+        obs.xyz = None if abs(w) < 1e-12 else (homog[:3, 0] / w).astype(np.float64)
+        self._refresh_views()
+
+    def _point_summary(self, obs: PointObservation, prefix: str = "") -> str:
+        left_text = "-" if obs.left_xy is None else f"({obs.left_xy[0]:.1f}, {obs.left_xy[1]:.1f})"
+        right_text = "-" if obs.right_xy is None else f"({obs.right_xy[0]:.1f}, {obs.right_xy[1]:.1f})"
+        xyz_text = "-" if obs.xyz is None else f"({obs.xyz[0]:.2f}, {obs.xyz[1]:.2f}, {obs.xyz[2]:.2f}) mm"
+        return f"{prefix}P{obs.point_id:02d} L={left_text} R={right_text} 3D={xyz_text} status={obs.status} conf={obs.confidence:.3f}"
+
+    def save_current_frame(self):
+        if self.left_rectified is None or self.right_rectified is None:
+            QMessageBox.warning(self, "错误", "当前没有可保存的帧")
+            return
+        missing = [obs.point_id for obs in self.current_points if obs.xyz is None]
+        if missing:
+            QMessageBox.warning(self, "错误", f"这些点还未完成三维重建: {missing}")
+            return
+        snapshot = deepcopy(self.current_points)
+        self.saved_frames[self.frame_index] = snapshot
+        self.previous_saved_points = deepcopy(snapshot)
+        self.previous_left_gray = cv2.cvtColor(self.left_rectified, cv2.COLOR_BGR2GRAY)
+        self.initialized = True
+        v_errors = [abs(obs.left_xy[1] - obs.right_xy[1]) for obs in snapshot if obs.left_xy is not None and obs.right_xy is not None]
+        mean_v_error = float(np.mean(v_errors)) if v_errors else 0.0
+        self.log_add(f"[OK] 已保存 frame={self.frame_index} 的 {len(snapshot)} 个点。平均 |vL-vR| = {mean_v_error:.3f}px。")
+        if mean_v_error > 1.5:
+            self.log_add("[WARN] 当前帧上下行误差偏大，建议检查右图修正点或标定质量。")
+
+    def track_next_frame(self):
+        if not self.initialized or self.previous_left_gray is None or self.previous_saved_points is None:
+            QMessageBox.warning(self, "错误", "请先完成首帧初始化并保存当前帧")
+            return
+        if self.video_capture is None:
+            QMessageBox.warning(self, "错误", "请先打开视频")
+            return
+        if self.is_playing:
+            self.is_playing = False
+            self.btn_play.setText("播放")
+            self.play_timer.stop()
+        if not self._read_and_show_one_frame():
+            QMessageBox.information(self, "结束", "视频已经到末尾")
+            return
+        current_gray = cv2.cvtColor(self.left_rectified, cv2.COLOR_BGR2GRAY)
+        prev_pts = np.array([obs.left_xy for obs in self.previous_saved_points], dtype=np.float32).reshape(-1, 1, 2)
+        next_pts, status, err = cv2.calcOpticalFlowPyrLK(
+            self.previous_left_gray,
+            current_gray,
+            prev_pts,
+            None,
+            winSize=(31, 31),
+            maxLevel=4,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+        )
+        new_points: List[PointObservation] = []
+        for idx, prev_obs in enumerate(self.previous_saved_points):
+            obs = PointObservation(point_id=prev_obs.point_id)
+            if status is None or int(status[idx, 0]) == 0:
+                obs.status = "lost"
+                new_points.append(obs)
+                continue
+            x, y = next_pts[idx, 0]
+            obs.left_xy = (float(x), float(y))
+            lk_err = float(err[idx, 0]) if err is not None else 0.0
+            lk_conf = 1.0 / (1.0 + max(lk_err, 0.0))
+            prev_disp = None if prev_obs.left_xy is None or prev_obs.right_xy is None else float(prev_obs.left_xy[0] - prev_obs.right_xy[0])
+            match = self._match_right_point(float(x), float(y), prev_disp)
+            if match is not None:
+                obs.right_xy, match_conf = match
+                obs.confidence = min(lk_conf, match_conf)
+                obs.status = "auto_tracked"
+                self._update_point_3d(obs)
+            else:
+                obs.confidence = lk_conf
+                obs.status = "need_right_fix"
+            new_points.append(obs)
+        self.current_points = new_points
+        focus_idx = 0
+        for idx, obs in enumerate(self.current_points):
+            if obs.xyz is None or obs.confidence < 0.65:
+                focus_idx = idx
+                break
+        self.selected_point_index = focus_idx
+        self.point_index_spin.blockSignals(True)
+        self.point_index_spin.setValue(focus_idx + 1)
+        self.point_index_spin.blockSignals(False)
+        ok_count = sum(1 for obs in self.current_points if obs.xyz is not None)
+        self.log_add(f"[OK] 已自动跟踪到 frame={self.frame_index}，可用点 {ok_count}/{self.point_count}。请重点复核低置信度点。")
+        self._refresh_views()
+    def _refresh_views(self):
+        if self.left_rectified is None or self.right_rectified is None:
+            return
+        left = self.left_rectified.copy()
+        right = self.right_rectified.copy()
+        self._draw_guides(left)
+        self._draw_guides(right)
+        for idx, obs in enumerate(self.current_points):
+            selected = idx == self.selected_point_index
+            self._draw_point(left, obs.left_xy, obs, selected, True)
+            self._draw_point(right, obs.right_xy, obs, selected, False)
+        self.latest_left = left
+        self.latest_right = right
+        self.viewL.set_image_pixmap(bgr_to_qpixmap(left), left.shape[1], left.shape[0])
+        self.viewR.set_image_pixmap(bgr_to_qpixmap(right), right.shape[1], right.shape[0])
+
+    def _draw_guides(self, img: np.ndarray):
+        step = max(60, img.shape[0] // 10)
+        for y in range(step, img.shape[0], step):
+            cv2.line(img, (0, y), (img.shape[1] - 1, y), (0, 80, 0), 1)
+
+    def _draw_point(self, img: np.ndarray, pt: Optional[Tuple[float, float]], obs: PointObservation, selected: bool, is_left: bool):
+        if pt is None:
+            return
+        x = int(round(pt[0]))
+        y = int(round(pt[1]))
+        if obs.status in ("auto_tracked", "manual_left+auto_right"):
+            color = (0, 255, 255)
+        elif obs.status in ("manual_pair", "manual_corrected"):
+            color = (0, 255, 0)
+        elif obs.status in ("lost", "need_right_fix") or obs.xyz is None:
+            color = (0, 0, 255)
+        else:
+            color = (255, 0, 0)
+        size = 26 if selected else 18
+        thickness = 3 if selected else 2
+        cv2.drawMarker(img, (x, y), color, markerType=cv2.MARKER_CROSS, markerSize=size, thickness=thickness)
+        side = "L" if is_left else "R"
+        cv2.putText(img, f"P{obs.point_id:02d}{side}", (x + 6, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+        if selected:
+            cv2.circle(img, (x, y), 16, (255, 255, 255), 1)
+
+    def export_csv(self):
+        if not self.saved_frames:
+            QMessageBox.warning(self, "错误", "还没有保存任何帧")
+            return
+        default_name = os.path.join(RECORD_DIR, f"tracked_points_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+        path, _ = QFileDialog.getSaveFileName(self, "导出CSV", default_name, "CSV (*.csv)")
+        if not path:
+            return
+        rows = []
+        for frame_idx in sorted(self.saved_frames.keys()):
+            t_sec = frame_idx / self.video_fps if self.video_fps > 1e-9 else 0.0
+            for obs in self.saved_frames[frame_idx]:
+                lxy = obs.left_xy or (None, None)
+                rxy = obs.right_xy or (None, None)
+                xyz = obs.xyz.tolist() if obs.xyz is not None else [None, None, None]
+                rows.append({
+                    "frame_idx": frame_idx,
+                    "timestamp_sec": f"{t_sec:.6f}",
+                    "point_id": obs.point_id,
+                    "u_left": lxy[0],
+                    "v_left": lxy[1],
+                    "u_right": rxy[0],
+                    "v_right": rxy[1],
+                    "x_mm": xyz[0],
+                    "y_mm": xyz[1],
+                    "z_mm": xyz[2],
+                    "track_status": obs.status,
+                    "confidence": f"{obs.confidence:.6f}",
+                })
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=["frame_idx", "timestamp_sec", "point_id", "u_left", "v_left", "u_right", "v_right", "x_mm", "y_mm", "z_mm", "track_status", "confidence"])
+            writer.writeheader()
+            writer.writerows(rows)
+        self.log_add(f"[OK] CSV 已导出到: {path}")
+        QMessageBox.information(self, "完成", f"CSV 已导出到:\n{path}")
+
+    def export_animation(self):
+        if not self.saved_frames:
+            QMessageBox.warning(self, "错误", "还没有保存任何帧")
+            return
         try:
-            with open(ply_path, 'w') as f:
-                # PLY 头部
-                f.write("ply\n")
-                f.write("format ascii 1.0\n")
-                f.write(f"element vertex {len(self.point_cloud)}\n")
-                f.write("property float x\n")
-                f.write("property float y\n")
-                f.write("property float z\n")
-                f.write("property uchar red\n")
-                f.write("property uchar green\n")
-                f.write("property uchar blue\n")
-                f.write("end_header\n")
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except Exception as exc:
+            QMessageBox.warning(self, "错误", f"导出3D动画需要 matplotlib: {exc}")
+            return
+        default_name = os.path.join(RECORD_DIR, f"tracked_3d_animation_{time.strftime('%Y%m%d_%H%M%S')}.mp4")
+        path, _ = QFileDialog.getSaveFileName(self, "导出3D动画", default_name, "MP4 (*.mp4)")
+        if not path:
+            return
+        frames = []
+        for frame_idx in sorted(self.saved_frames.keys()):
+            xyz = np.array([obs.xyz for obs in self.saved_frames[frame_idx] if obs.xyz is not None], dtype=np.float64)
+            if len(xyz) == self.point_count:
+                frames.append((frame_idx, xyz))
+        if not frames:
+            QMessageBox.warning(self, "错误", "没有完整的三维帧可导出")
+            return
+        all_xyz = np.concatenate([xyz for _, xyz in frames], axis=0)
+        mins = np.min(all_xyz, axis=0)
+        maxs = np.max(all_xyz, axis=0)
+        center = 0.5 * (mins + maxs)
+        radius = max(float(np.max(maxs - mins)) * 0.6, 50.0)
+        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), max(1.0, min(self.video_fps, 30.0)), (960, 720))
+        if not writer.isOpened():
+            QMessageBox.warning(self, "错误", "无法创建动画文件")
+            return
+        try:
+            fig = plt.figure(figsize=(9.6, 7.2), dpi=100)
+            ax = fig.add_subplot(111, projection="3d")
+            for frame_idx, xyz in frames:
+                ax.clear()
+                ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c="tab:orange", s=40, depthshade=False)
+                ax.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2], color="tab:blue", linewidth=2)
+                for point_idx, point in enumerate(xyz, start=1):
+                    ax.text(point[0], point[1], point[2], f"P{point_idx:02d}", fontsize=8)
+                ax.set_title(f"Tracked 3D Skeleton | frame={frame_idx}")
+                ax.set_xlabel("X (mm)")
+                ax.set_ylabel("Y (mm)")
+                ax.set_zlabel("Z (mm)")
+                ax.set_xlim(center[0] - radius, center[0] + radius)
+                ax.set_ylim(center[1] - radius, center[1] + radius)
+                ax.set_zlim(center[2] - radius, center[2] + radius)
+                ax.view_init(elev=24, azim=-58)
+                ax.grid(True)
+                fig.tight_layout()
+                fig.canvas.draw()
+                w, h = fig.canvas.get_width_height()
+                rgb = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
+                writer.write(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        finally:
+            writer.release()
+            plt.close("all")
+        self.log_add(f"[OK] 3D 动画已导出到: {path}")
+        QMessageBox.information(self, "完成", f"3D 动画已导出到:\n{path}")
 
-                # 写入点云数据
-                for i in range(len(self.point_cloud)):
-                    x, y, z = self.point_cloud[i]
-                    r, g, b = self.point_colors[i] if self.point_colors is not None else (255, 255, 255)
-                    f.write(f"{x:.3f} {y:.3f} {z:.3f} {int(r)} {int(g)} {int(b)}\n")
-
-            self.log_add(f"[OK] 点云已保存到: {ply_path}")
-        except Exception as e:
-            self.log_add(f"[ERR] 保存点云失败: {str(e)}")
+    def closeEvent(self, event):
+        self._close_video_capture()
+        event.accept()

@@ -1,241 +1,89 @@
-# 立体视觉标定与测距系统
+﻿# Stereo Calibration and High-Precision Tracking Tool
 
-## 项目概述
+双目标定、矫正、测距与机械臂高精度三维关键点追踪工具。
+Stereo calibration, rectification, measurement, and high-precision 3D keypoint tracking for robotic-arm bending experiments.
 
-这是一个基于 Python 和 OpenCV 的立体视觉系统，主要用于双目相机的标定、图像矫正以及基于视差的距离测量。系统提供了直观的图形用户界面，支持相机预览、视频录制、棋盘格标定、图像矫正和点到点距离测量等功能。
+## Overview | 项目概览
+This project is a PyQt5 desktop app built on OpenCV for stereo-camera experiments. It covers live preview, video recording, chessboard-based stereo calibration, rectified playback, interactive measurement, dense disparity exploration, and a sparse high-precision tracking workflow for robotic-arm motion analysis.
 
-### 主要功能
-- 相机预览与视频录制
-- 基于棋盘格的相机标定
-- 立体图像矫正
-- 基于视差的三维距离测量
-- 交互式点选择与结果可视化
-- 三维点云生成与可视化
-- 视差参数预设与优化指南
+这个项目是一个基于 OpenCV 和 PyQt5 的双目视觉桌面工具，覆盖相机预览、视频录制、棋盘格双目标定、双目矫正、交互式测距、稠密视差浏览，以及面向机械臂弯曲实验的稀疏高精度三维关键点追踪流程。
 
-### 技术栈
+## Highlights | 主要能力
+- Stereo preview and recording | 双目预览与录像
+- Stereo calibration with YAML export | 双目标定与 YAML 导出
+- Rectified playback and manual 3D measurement | 矫正后回放与手工三维测距
+- Dense disparity and point cloud inspection | 稠密视差与点云浏览
+- High-precision sparse tracking workflow | 高精度稀疏点追踪流程
+- CSV export for frame-by-frame coordinates | 逐帧坐标 CSV 导出
+- MP4 export for simplified 3D skeleton animation | 三维骨架动画 MP4 导出
+
+## High-Precision Workflow | 高精度实验流程
+The new workflow is designed for experiments where only a small set of landmarks matters. Instead of treating dense disparity as the main source of truth, it tracks left/right correspondences for fixed keypoints and triangulates them directly from the rectified stereo projection matrices.
+
+新的实验流程面向“少量固定实验点”的场景，不再把整张视差图作为主依据，而是直接维护左右图关键点对应关系，并使用矫正后的双目投影矩阵进行三角化，从而得到更稳定、可控的高精度三维坐标。
+
+### Tracking pipeline | 追踪步骤
+1. Load the stereo YAML file. | 加载双目标定 YAML。
+2. Open a recorded experiment video. | 打开实验录像。
+3. Freeze a clear frame in the `3D Perception` tab. | 在“三维感知”页冻结一帧清晰图像。
+4. Initialize `P01 ~ P15` on the left image. | 在左图初始化 `P01 ~ P15`。
+5. Review or correct the suggested right-image correspondences. | 检查并修正右图建议对应点。
+6. Save the frame. | 保存当前帧。
+7. Track the next frame automatically and correct low-confidence points. | 自动跟踪下一帧，并修正低置信度点。
+8. Export CSV and the 3D animation after enough frames are collected. | 在收集足够帧后导出 CSV 和 3D 动画。
+
+## Why Sparse Tracking Instead of Dense Disparity | 为什么主流程不用整张视差图
+Dense disparity is still useful for visualization, but robotic-arm bending experiments usually care about a limited number of stable landmarks. Sparse stereo correspondences plus triangulation are often more robust when the scene contains dark backgrounds, highlights, repeated structures, or reflective surfaces.
+
+稠密视差图依然适合做可视化，但机械臂弯曲实验通常只关心少量稳定实验点。在黑色背景、反光表面、重复结构较多的场景里，稀疏对应点加三角化通常比整图视差更稳，也更容易控制误差传播。
+
+## CSV Output | CSV 输出字段
+- `frame_idx`
+- `timestamp_sec`
+- `point_id`
+- `u_left`, `v_left`
+- `u_right`, `v_right`
+- `x_mm`, `y_mm`, `z_mm`
+- `track_status`
+- `confidence`
+
+## Accuracy Notes | 精度建议
+- Calibration quality is the first priority. | 标定质量永远是第一优先级。
+- Keep `SPLIT_OFFSET` and `SPLIT_GAP` consistent with the real stereo split. | `SPLIT_OFFSET` 和 `SPLIT_GAP` 必须与真实拼接边界一致。
+- Prefer stable corners or textured landmarks over specular highlights. | 尽量选择稳定角点或纹理点，不要选强反光区域。
+- Watch the average `|vL-vR|` when saving a frame. | 保存帧时重点关注平均 `|vL-vR|`。
+- Always review low-confidence matches manually. | 对低置信度匹配一定要人工复核。
+
+## Dependencies | 依赖
 - Python 3.9+
-- OpenCV
-- PyQt5
-- NumPy
-- FFmpeg
-- Open3D (用于点云可视化)
+- opencv-python
+- numpy
+- pyqt5
+- matplotlib
+- open3d
+- ffmpeg
 
-## 目录结构
-
-```
-e:\research\0\stero\
-├── __pycache__/             # Python 编译缓存
-├── calib_tab.py             # 标定功能模块
-├── clickable_label.py       # 可点击图像标签组件
-├── config.py                # 配置文件
-├── ffmpeg_io.py             # FFmpeg 视频处理模块
-├── main.py                  # 主程序入口
-├── perception_3d_tab.py     # 三维感知和点云模块
-├── preview_record_tab.py    # 预览和录制功能模块
-├── rectify_tab.py           # 矫正和测距功能模块
-├── stereo_calibrate_from_video.py  # 从视频标定脚本
-├── test.py                  # 测试脚本
-├── utils_common.py          # 公共工具函数模块
-├── utils_img.py             # 图像处理工具函数
-├── ply/                     # 点云文件保存目录
-├── record_*.avi             # 录制的视频文件
-├── stereo_calib_*.yaml      # 标定结果文件
-└── DECXIN-SM-2930V1 USB摄像模组规格书.pdf  # 相机规格书
+Install example | 安装示例:
+```bash
+pip install opencv-python numpy pyqt5 matplotlib open3d
 ```
 
-## 安装和依赖
-
-### 所需依赖
-
-1. **Python 包**：
-   - opencv-python (>=4.5.0)
-   - numpy
-   - pyqt5
-   - open3d (用于点云可视化)
-
-2. **外部工具**：
-   - FFmpeg：用于相机预览和视频录制
-
-### 安装方法
-
-1. **安装 Python 包**：
-   ```bash
-   pip install opencv-python numpy pyqt5 open3d
-   ```
-
-2. **安装 FFmpeg**：
-   - 从 [FFmpeg 官网](https://ffmpeg.org/download.html) 下载适合您系统的版本
-   - 或使用包管理器安装（如 winget、apt 等）
-
-### 配置说明
-
-在 `config.py` 文件中配置以下参数：
-
-```python
-# ===== 你需要改的 =====
-FFMPEG_EXE = r"C:\path\to\ffmpeg.exe"  # FFmpeg 可执行文件路径
-DEVICE_NAME = "DECXIN Camera"           # 相机设备名称
-RECORD_DIR = r"E:\research\0\stero"    # 录制文件保存目录
-YAML_DIR = r"E:\research\0\stero"      # YAML标定文件目录
-PLY_DIR = r"E:\research\0\stero\ply"   # 点云文件保存目录
-
-SBS_W, SBS_H = 3840, 1080  # 相机分辨率（宽x高）
-FPS = 30                   # 帧率
-
-PREVIEW_W, PREVIEW_H = 1280, 360  # 预览分辨率
-PREVIEW_Q = 7                     # 预览质量
-
-SPLIT_OFFSET = 0  # 分割偏移
-SPLIT_GAP = 0     # 分割间隙
-# =====================
-```
-
-## 使用方法
-
-### 启动应用
-
+## Run | 运行
 ```bash
 python main.py
 ```
 
-应用启动后会显示一个包含四个标签页的界面：
-1. **预览+录制**：用于相机预览和视频录制
-2. **标定**：用于相机标定
-3. **Rectify+测距**：用于图像矫正和距离测量
-4. **三维感知**：用于点云生成和可视化
+## Repository Layout | 目录说明
+- `main.py`: application entry point | 主程序入口
+- `preview_record_tab.py`: preview and recording UI | 预览与录制页面
+- `calib_tab.py`: stereo calibration workflow | 双目标定页面
+- `rectify_tab.py`: rectified measurement workflow | 矫正与测距页面
+- `perception_3d_tab.py`: high-precision tracking and export workflow | 高精度追踪与导出页面
+- `stereo_calibrate_from_video.py`: calibration helper script for recorded stereo videos | 录像标定辅助脚本
+- `utils_img.py`: image splitting helpers | 图像切分辅助函数
+- `config.py`: path, device, and split configuration | 路径、设备与切分配置
 
-### 预览和录制功能
+## Status | 当前状态
+The branch `update-readme` contains the new tracking workflow, integrated homepage-style README content, and related configuration updates. It is intended to be reviewed through a pull request before merging.
 
-1. **开始预览**：点击"开始预览"按钮，系统会显示左右相机的实时画面
-2. **开始录制**：点击"开始录制"按钮，系统会将视频保存到配置的目录
-3. **截图**：点击"截图(预览分辨率)"按钮，系统会保存当前预览画面
-
-### 相机标定流程
-
-1. **准备工作**：
-   - 打印一张棋盘格标定板（建议使用 11x8 内角点，30mm 方格）
-   - 使用"预览+录制"功能录制一段包含不同角度棋盘格的视频
-
-2. **标定步骤**：
-   - 在"标定"标签页中，点击"选择视频"按钮选择录制的视频
-   - 设置棋盘格参数：内角点 cols、rows，方格尺寸(mm)
-   - 点击"扫描角点"按钮，系统会自动检测视频中的棋盘格角点
-   - 点击"一键标定+保存YAML"按钮，系统会计算标定参数并保存为 YAML 文件
-
-### 矫正和测距操作
-
-1. **准备工作**：
-   - 使用上述步骤获取标定结果 YAML 文件
-   - 准备一段要进行测距的视频
-
-2. **测距步骤**：
-   - 在"Rectify+测距"标签页中，点击"选YAML"按钮选择标定结果文件
-   - 点击"加载YAML(预计算矫正)"按钮加载标定参数
-   - 点击"选视频"按钮选择要分析的视频
-   - 点击"打开视频"按钮打开视频文件
-   - 播放视频并找到合适的帧，点击"冻结为测距帧"按钮
-   - 按顺序点击四个点：A左→A右→B左→B右
-   - 输入已知长度(mm)，点击"计算 3D 距离/误差"按钮
-   - 系统会显示测量结果和误差
-
-### 三维感知和点云操作
-
-1. **准备工作**：
-   - 使用上述步骤获取标定结果 YAML 文件
-   - 准备一段要进行点云生成的视频
-
-2. **点云生成步骤**：
-   - 在"三维感知"标签页中，点击"选YAML"按钮选择标定结果文件
-   - 点击"加载YAML"按钮加载标定参数
-   - 点击"选视频"按钮选择要分析的视频
-   - 点击"打开视频"按钮打开视频文件
-   - 播放视频并找到合适的帧，点击"冻结为处理帧"按钮
-   - 选择视差计算方法（SGBM 或 BM）
-   - 调整视差参数或选择预设（纹理丰富场景、纹理较少场景等）
-   - 点击"计算视差"按钮计算视差图
-   - 点击"生成点云"按钮生成三维点云
-   - 系统会将点云保存到 PLY_DIR 目录
-
-3. **点云查看步骤**：
-   - 生成点云后，点击"查看点云"按钮
-   - 系统会打开 Open3D 点云查看器
-   - 在查看器中可以：
-     - 鼠标拖动：旋转视角
-     - 滚轮：缩放
-     -  Shift+鼠标拖动：平移
-     - 空格键：重置视角
-
-4. **视差参数选择指南**：
-   - **纹理丰富场景**：块大小 5-7，视差数量 32-64
-   - **纹理较少场景**：块大小 11-15，视差数量 64-128
-   - **近距离场景**：最小视差 0-10，视差数量适中
-   - **远距离场景**：最小视差 10-20，视差数量较大
-
-## 技术细节
-
-### 立体视觉原理
-
-立体视觉是利用两台相机从不同角度拍摄同一场景，通过计算对应点的视差来获取深度信息的技术。本系统采用平行双目相机 setup，通过标定获取相机内外参数，然后进行图像矫正，使同名点位于同一水平线上，最后通过视差计算距离。
-
-### 标定算法说明
-
-1. **角点检测**：使用 OpenCV 的 `findChessboardCorners` 或 `findChessboardCornersSB` 检测棋盘格角点
-2. **单目标定**：分别对左右相机进行标定，获取内参矩阵和畸变系数
-3. **立体标定**：计算两相机之间的旋转矩阵和平移向量
-4. **矫正映射**：使用 `stereoRectify` 和 `initUndistortRectifyMap` 计算矫正映射
-
-### 测距计算方法
-
-1. **视差计算**：通过手动选择对应点，计算左右图像中对应点的水平像素差
-2. **三维重建**：使用重投影矩阵 Q 将像素坐标和视差转换为三维坐标
-3. **距离计算**：计算两个三维点之间的欧氏距离
-
-### 点云生成与处理
-
-1. **视差计算**：使用 SGBM（Semi-Global Block Matching）或 BM（Block Matching）算法计算视差图
-2. **点云生成**：使用重投影矩阵将视差图转换为三维点云
-3. **点云过滤**：
-   - 基于视差阈值的过滤
-   - 基于距离范围的过滤
-   - 统计滤波去除离群点
-   - 半径滤波去除稀疏区域的点
-4. **点云保存**：将处理后的点云保存为 PLY 格式文件
-5. **点云可视化**：使用 Open3D 库进行交互式点云查看
-
-## 常见问题和解决方案
-
-1. **无法打开相机**：
-   - 检查相机是否正确连接
-   - 确认 `config.py` 中的 `DEVICE_NAME` 是否正确
-   - 确保 FFmpeg 路径正确
-
-2. **标定失败**：
-   - 确保棋盘格清晰可见
-   - 录制视频时包含足够多的不同角度
-   - 检查棋盘格参数设置是否正确
-
-3. **测距误差较大**：
-   - 确保标定准确
-   - 选择对比度高、纹理丰富的场景
-   - 确保对应点选择准确
-
-## 注意事项
-
-1. **相机选择**：建议使用同步性好的双目相机，如 DECXIN Camera
-2. **标定板**：使用打印质量好、平整的棋盘格标定板
-3. **环境要求**：在光线充足、均匀的环境下进行标定和测距
-4. **存储管理**：定期清理录制的视频文件，避免占用过多磁盘空间
-5. **FFmpeg 配置**：确保 FFmpeg 版本兼容，建议使用最新版本
-
-## 系统要求
-
-- Windows 10/11
-- Python 3.9+
-- 至少 4GB 内存
-- 支持 OpenGL 的显卡（用于 PyQt5 渲染）
-- 可用 USB 3.0 端口连接相机
-
-## 免责声明
-
-本系统仅供研究和教育目的使用，对于商业应用中的准确性和可靠性不做保证。使用时请自行验证测量结果的准确性。
+当前 `update-readme` 分支已经包含新的高精度追踪工作流、项目首页风格 README，以及相关配置更新，适合通过 Pull Request 审核后再合并。
