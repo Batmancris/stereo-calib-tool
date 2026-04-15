@@ -15,7 +15,7 @@
   <rect x="56" y="252" width="340" height="160" rx="20" fill="#08161E" stroke="#1B5A71"/>
   <rect x="430" y="252" width="340" height="160" rx="20" fill="#08161E" stroke="#1B5A71"/>
   <rect x="804" y="252" width="340" height="160" rx="20" fill="#08161E" stroke="#1B5A71"/>
-  <text x="86" y="296" fill="#8FE9F1" font-size="26" font-family="Segoe UI, Arial">01 Preview & Record</text>
+  <text x="86" y="296" fill="#8FE9F1" font-size="26" font-family="Segoe UI, Arial">01 Preview &amp; Record</text>
   <text x="86" y="332" fill="#D8F4F8" font-size="18" font-family="Segoe UI, Arial">Open the camera, split side-by-side frames,</text>
   <text x="86" y="357" fill="#D8F4F8" font-size="18" font-family="Segoe UI, Arial">record experiments, and save snapshots.</text>
   <text x="460" y="296" fill="#8FE9F1" font-size="26" font-family="Segoe UI, Arial">02 Stereo Calibration</text>
