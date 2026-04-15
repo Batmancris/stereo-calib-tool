@@ -3,7 +3,7 @@ import numpy as np
 import cv2
 
 from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QRectF
-from PyQt5.QtGui import QPainter, QPixmap, QImage
+from PyQt5.QtGui import QFont, QPainter, QPixmap, QImage
 from PyQt5.QtWidgets import QWidget
 
 
@@ -39,6 +39,7 @@ class ClickableImageLabel(QWidget):
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.ClickFocus)
+        self.setFont(QFont("Microsoft YaHei UI", 10))
 
     # ---------- public API ----------
     def set_image_pixmap(self, pixmap: QPixmap, img_w: int, img_h: int):
@@ -102,6 +103,7 @@ class ClickableImageLabel(QWidget):
             # 没图时画提示文字
             if self._hint_text:
                 p.setPen(Qt.white)
+                p.setFont(QFont("Microsoft YaHei UI", 10))
                 p.drawText(self.rect(), Qt.AlignCenter, self._hint_text)
             return
 
