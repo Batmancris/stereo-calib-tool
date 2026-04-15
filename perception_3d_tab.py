@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import csv
 import os
 import time
@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
 from clickable_label import ClickableImageLabel
 from config import RECORD_DIR, SPLIT_GAP, SPLIT_OFFSET, YAML_DIR
 from utils_common import bgr_to_qpixmap, read_mat
+from ui_theme import create_page_header
 from utils_img import split_sbs
 
 
@@ -51,6 +52,7 @@ class Perception3DTab(QWidget):
         self.map2y: Optional[np.ndarray] = None
         self.proj_left: Optional[np.ndarray] = None
         self.proj_right: Optional[np.ndarray] = None
+        self.reprojection_matrix: Optional[np.ndarray] = None
 
         self.video_capture: Optional[cv2.VideoCapture] = None
         self.video_fps: float = 30.0
@@ -83,6 +85,9 @@ class Perception3DTab(QWidget):
         scroll.setWidgetResizable(True)
         container = QWidget()
         lay = QVBoxLayout(container)
+        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setSpacing(14)
+        lay.addWidget(create_page_header("多点 3D 测量", "围绕首帧人工初始化、多点三角化、逐帧跟踪和 CSV 导出展开，适合把机械结构上的多个关键点连续量出来。", accent="#dd8a6f"))
         self._create_yaml_section(lay)
         self._create_video_section(lay)
         self._create_tracking_section(lay)
@@ -193,18 +198,19 @@ class Perception3DTab(QWidget):
         row = QHBoxLayout()
         self.viewL = ClickableImageLabel("左图: 设置/修正当前点")
         self.viewL.setMinimumSize(640, 480)
-        self.viewL.setStyleSheet("border:1px solid gray; background:black;")
+        self.viewL.setObjectName("ImagePanel")
         self.viewL.clicked.connect(self.on_click_left)
         row.addWidget(self.viewL, 1)
         self.viewR = ClickableImageLabel("右图: 修正当前点")
         self.viewR.setMinimumSize(640, 480)
-        self.viewR.setStyleSheet("border:1px solid gray; background:black;")
+        self.viewR.setObjectName("ImagePanel")
         self.viewR.clicked.connect(self.on_click_right)
         row.addWidget(self.viewR, 1)
         layout.addLayout(row)
 
     def _create_log_section(self, layout: QVBoxLayout):
         self.log = QTextEdit()
+        self.log.setObjectName("LogPanel")
         self.log.setReadOnly(True)
         self.log.setFixedHeight(240)
         layout.addWidget(self.log)
@@ -239,6 +245,7 @@ class Perception3DTab(QWidget):
             p1 = read_mat(fs, "P1")
             r2 = read_mat(fs, "R2")
             p2 = read_mat(fs, "P2")
+            self.reprojection_matrix = read_mat(fs, "Q")
             fs.release()
             self.proj_left = p1
             self.proj_right = p2
@@ -496,24 +503,44 @@ class Perception3DTab(QWidget):
         match_y = min_y + max_loc[1]
         return (float(match_x), float(match_y)), float(max_val)
 
-    def _update_point_3d(self, obs: PointObservation):
-        if obs.left_xy is None or obs.right_xy is None or self.proj_left is None or self.proj_right is None:
-            obs.xyz = None
-            self._refresh_views()
-            return
+    def _solve_point_3d(self, obs: PointObservation):
+        if obs.left_xy is None:
+            return None, "左图点未设置"
+        if obs.right_xy is None:
+            return None, "右图点未设置"
+        if self.proj_left is None or self.proj_right is None:
+            return None, "投影矩阵未加载"
+
         u_l, v_l = obs.left_xy
         u_r, v_r = obs.right_xy
-        disparity = u_l - u_r
+        disparity = float(u_l - u_r)
         if disparity <= 0.1:
-            obs.xyz = None
-            self.log_add(f"[WARN] P{obs.point_id:02d} disparity={disparity:.3f}px，请修正右图点。")
-            self._refresh_views()
-            return
+            return None, f"视差过小或为负 ({disparity:.3f}px)，请修正右图点"
+
+        if self.reprojection_matrix is not None:
+            vec = self.reprojection_matrix @ np.array([u_l, 0.5 * (v_l + v_r), disparity, 1.0], dtype=np.float64)
+            w_q = float(vec[3])
+            if abs(w_q) > 1e-12:
+                xyz_q = (vec[:3] / w_q).astype(np.float64)
+                if np.all(np.isfinite(xyz_q)):
+                    return xyz_q, None
+
         pts_l = np.array([[u_l], [v_l]], dtype=np.float64)
         pts_r = np.array([[u_r], [v_r]], dtype=np.float64)
         homog = cv2.triangulatePoints(self.proj_left, self.proj_right, pts_l, pts_r)
-        w = homog[3, 0]
-        obs.xyz = None if abs(w) < 1e-12 else (homog[:3, 0] / w).astype(np.float64)
+        w_t = float(homog[3, 0])
+        if abs(w_t) <= 1e-12:
+            return None, "三角化失败，齐次坐标无效"
+        xyz_t = (homog[:3, 0] / w_t).astype(np.float64)
+        if not np.all(np.isfinite(xyz_t)):
+            return None, "三角化结果包含无效数值"
+        return xyz_t, None
+
+    def _update_point_3d(self, obs: PointObservation):
+        xyz, reason = self._solve_point_3d(obs)
+        obs.xyz = xyz
+        if xyz is None and reason is not None:
+            self.log_add(f"[WARN] P{obs.point_id:02d} 未完成3D解算: {reason}")
         self._refresh_views()
 
     def _point_summary(self, obs: PointObservation, prefix: str = "") -> str:
@@ -526,10 +553,24 @@ class Perception3DTab(QWidget):
         if self.left_rectified is None or self.right_rectified is None:
             QMessageBox.warning(self, "错误", "当前没有可保存的帧")
             return
-        missing = [obs.point_id for obs in self.current_points if obs.xyz is None]
-        if missing:
-            QMessageBox.warning(self, "错误", f"这些点还未完成三维重建: {missing}")
+
+        unresolved = []
+        for obs in self.current_points:
+            xyz, reason = self._solve_point_3d(obs)
+            obs.xyz = xyz
+            if xyz is None:
+                unresolved.append(f"P{obs.point_id:02d}: {reason or '未完成3D解算'}")
+
+        if unresolved:
+            detail = "\n".join(unresolved[:12])
+            if len(unresolved) > 12:
+                detail += f"\n... 其余 {len(unresolved) - 12} 个点也未完成。"
+            self.log_add("[WARN] 保存失败，仍有点未完成3D解算。")
+            for item in unresolved:
+                self.log_add(f"[WARN] {item}")
+            QMessageBox.warning(self, "错误", f"以下点还未完成三维重建:\n{detail}")
             return
+
         snapshot = deepcopy(self.current_points)
         self.saved_frames[self.frame_index] = snapshot
         self.previous_saved_points = deepcopy(snapshot)
@@ -743,3 +784,5 @@ class Perception3DTab(QWidget):
     def closeEvent(self, event):
         self._close_video_capture()
         event.accept()
+
+

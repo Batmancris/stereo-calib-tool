@@ -3,7 +3,7 @@ import os
 import cv2
 import numpy as np
 import time
-from datetime import datetime  # <-- 时间戳
+from datetime import datetime  # <-- 鏃堕棿鎴?
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 
 from utils_img import split_sbs, to_pixmap_fit
 from config import RECORD_DIR, YAML_DIR
+from ui_theme import create_page_header
 
 
 def make_object_points(cols, rows, square_mm):
@@ -23,49 +24,49 @@ def make_object_points(cols, rows, square_mm):
 
 def find_corners(gray, pattern_size):
     """
-    检测棋盘格角点
+    妫€娴嬫鐩樻牸瑙掔偣
     
-    参数：
-        gray: 灰度图像
-        pattern_size: 棋盘格模式尺寸 (cols, rows)
+    鍙傛暟锛?
+        gray: 鐏板害鍥惧儚
+        pattern_size: 妫嬬洏鏍兼ā寮忓昂瀵?(cols, rows)
     
-    返回：
-        (ok, corners): (是否成功, 角点坐标)
+    杩斿洖锛?
+        (ok, corners): (鏄惁鎴愬姛, 瑙掔偣鍧愭爣)
     """
     cols, rows = pattern_size
 
-    # 图像预处理：高斯模糊，减少噪声
+    # 鍥惧儚棰勫鐞嗭細楂樻柉妯＄硦锛屽噺灏戝櫔澹?
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
 
-    # 更稳的 SB 算法（如果 OpenCV 支持）
+    # 鏇寸ǔ鐨?SB 绠楁硶锛堝鏋?OpenCV 鏀寔锛?
     if hasattr(cv2, "findChessboardCornersSB"):
         try:
             ok, corners = cv2.findChessboardCornersSB(blurred, (cols, rows))
             if ok:
-                # 不需要额外的亚像素精确化，SB 算法已经很精确
+                # 涓嶉渶瑕侀澶栫殑浜氬儚绱犵簿纭寲锛孲B 绠楁硶宸茬粡寰堢簿纭?
                 return True, corners.astype(np.float32)
         except Exception as e:
-            # 如果 SB 算法失败，回退到传统算法
+            # 濡傛灉 SB 绠楁硶澶辫触锛屽洖閫€鍒颁紶缁熺畻娉?
             pass
 
-    # 传统角点检测算法
+    # 浼犵粺瑙掔偣妫€娴嬬畻娉?
     flags = (
         cv2.CALIB_CB_ADAPTIVE_THRESH | 
         cv2.CALIB_CB_NORMALIZE_IMAGE |
-        cv2.CALIB_CB_FAST_CHECK  # 快速检查，提高检测速度
+        cv2.CALIB_CB_FAST_CHECK  # 蹇€熸鏌ワ紝鎻愰珮妫€娴嬮€熷害
     )
     
     ok, corners = cv2.findChessboardCorners(blurred, (cols, rows), flags)
     if not ok:
         return False, None
 
-    # 亚像素精确化，使用更小的窗口提高速度
+    # 浜氬儚绱犵簿纭寲锛屼娇鐢ㄦ洿灏忕殑绐楀彛鎻愰珮閫熷害
     term = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1e-3)
     corners2 = cv2.cornerSubPix(blurred, corners, (7, 7), (-1, -1), term)
     return True, corners2
 
 
-# ---------------- 新增：从大量 pairs 里选“质量好 + 分散”的子集 ----------------
+# ---------------- 鏂板锛氫粠澶ч噺 pairs 閲岄€夆€滆川閲忓ソ + 鍒嗘暎鈥濈殑瀛愰泦 ----------------
 def _corners_to_xy(corners) -> np.ndarray:
     # corners: (N,1,2) or (N,2)
     c = np.asarray(corners, dtype=np.float32)
@@ -74,7 +75,7 @@ def _corners_to_xy(corners) -> np.ndarray:
 
 def _homography_rms(grid_xy: np.ndarray, img_xy: np.ndarray) -> float:
     """
-    用单应性把棋盘理想网格 -> 图像角点，计算RMS残差（越小越好）。
+    鐢ㄥ崟搴旀€ф妸妫嬬洏鐞嗘兂缃戞牸 -> 鍥惧儚瑙掔偣锛岃绠桼MS娈嬪樊锛堣秺灏忚秺濂斤級銆?
     """
     if grid_xy.shape[0] < 4:
         return float("inf")
@@ -89,13 +90,13 @@ def _homography_rms(grid_xy: np.ndarray, img_xy: np.ndarray) -> float:
 
 def _grid_spacing_cv(cols: int, rows: int, img_xy: np.ndarray) -> float:
     """
-    计算网格相邻点间距的“变异系数”(std/mean)，越小越好。
-    用于检测模糊/误检导致的网格不均匀。
+    璁＄畻缃戞牸鐩搁偦鐐归棿璺濈殑鈥滃彉寮傜郴鏁扳€?std/mean)锛岃秺灏忚秺濂姐€?
+    鐢ㄤ簬妫€娴嬫ā绯?璇瀵艰嚧鐨勭綉鏍间笉鍧囧寑銆?
     """
-    pts = img_xy.reshape(rows, cols, 2)  # 注意：findChessboardCorners返回顺序通常是行优先
-    # 行方向相邻距离
+    pts = img_xy.reshape(rows, cols, 2)  # 娉ㄦ剰锛歠indChessboardCorners杩斿洖椤哄簭閫氬父鏄浼樺厛
+    # 琛屾柟鍚戠浉閭昏窛绂?
     dx = np.linalg.norm(pts[:, 1:, :] - pts[:, :-1, :], axis=2).reshape(-1)
-    # 列方向相邻距离
+    # 鍒楁柟鍚戠浉閭昏窛绂?
     dy = np.linalg.norm(pts[1:, :, :] - pts[:-1, :, :], axis=2).reshape(-1)
     d = np.concatenate([dx, dy], axis=0)
     m = float(np.mean(d)) + 1e-9
@@ -105,34 +106,34 @@ def _grid_spacing_cv(cols: int, rows: int, img_xy: np.ndarray) -> float:
 
 def _pair_quality_features(cols: int, rows: int, cL, cR, image_size):
     """
-    输出：
-      quality_score: 越小越好
-      feat: 用于“多样性采样”的特征向量（归一化）
+    杈撳嚭锛?
+      quality_score: 瓒婂皬瓒婂ソ
+      feat: 鐢ㄤ簬鈥滃鏍锋€ч噰鏍封€濈殑鐗瑰緛鍚戦噺锛堝綊涓€鍖栵級
     """
     w, h = float(image_size[0]), float(image_size[1])
 
     xyL = _corners_to_xy(cL)
     xyR = _corners_to_xy(cR)
 
-    # 理想网格坐标（只用于homography拟合，不需要K）
+    # 鐞嗘兂缃戞牸鍧愭爣锛堝彧鐢ㄤ簬homography鎷熷悎锛屼笉闇€瑕並锛?
     grid = np.stack(np.meshgrid(np.arange(cols, dtype=np.float32),
                                 np.arange(rows, dtype=np.float32)), axis=-1).reshape(-1, 2)
 
-    # 1) homography拟合残差（越小越好）
+    # 1) homography鎷熷悎娈嬪樊锛堣秺灏忚秺濂斤級
     rmsH_L = _homography_rms(grid, xyL)
     rmsH_R = _homography_rms(grid, xyR)
 
-    # 2) 网格间距一致性（越小越好）
+    # 2) 缃戞牸闂磋窛涓€鑷存€э紙瓒婂皬瓒婂ソ锛?
     cvL = _grid_spacing_cv(cols, rows, xyL)
     cvR = _grid_spacing_cv(cols, rows, xyR)
 
-    # 3) 左右一致性：视差分布的std（越小越好）
+    # 3) 宸﹀彸涓€鑷存€э細瑙嗗樊鍒嗗竷鐨剆td锛堣秺灏忚秺濂斤級
     disp = xyL[:, 0] - xyR[:, 0]
     ydiff = xyL[:, 1] - xyR[:, 1]
     std_disp = float(np.std(disp))
     std_ydiff = float(np.std(ydiff))
 
-    # 4) 多样性特征：中心位置、面积尺度、旋转、平均视差
+    # 4) 澶氭牱鎬х壒寰侊細涓績浣嶇疆銆侀潰绉昂搴︺€佹棆杞€佸钩鍧囪宸?
     minL = np.min(xyL, axis=0); maxL = np.max(xyL, axis=0)
     box_w = float(maxL[0] - minL[0] + 1e-9)
     box_h = float(maxL[1] - minL[1] + 1e-9)
@@ -141,19 +142,19 @@ def _pair_quality_features(cols: int, rows: int, cL, cR, image_size):
     center = np.mean(xyL, axis=0)
     cx = float(center[0] / w)
     cy = float(center[1] / h)
-    a = float(np.log(area / (w * h) + 1e-9))  # log尺度更稳
+    a = float(np.log(area / (w * h) + 1e-9))  # log灏哄害鏇寸ǔ
 
-    # 旋转：用第一行方向向量估一个角度
-    # 取(0,0)->(cols-1,0)的向量（按角点排序假设）
+    # 鏃嬭浆锛氱敤绗竴琛屾柟鍚戝悜閲忎及涓€涓搴?
+    # 鍙?0,0)->(cols-1,0)鐨勫悜閲忥紙鎸夎鐐规帓搴忓亣璁撅級
     p0 = xyL[0]
     p1 = xyL[cols - 1]
-    ang = float(np.arctan2(p1[1] - p0[1], p1[0] - p0[0])) / np.pi  # 归一化到[-1,1]
+    ang = float(np.arctan2(p1[1] - p0[1], p1[0] - p0[0])) / np.pi  # 褰掍竴鍖栧埌[-1,1]
 
-    md = float(np.mean(disp) / w)  # 归一化
+    md = float(np.mean(disp) / w)  # 褰掍竴鍖?
 
     feat = np.array([cx, cy, a, ang, md], dtype=np.float32)
 
-    # 质量分数（权重是经验值，后面可调）
+    # 璐ㄩ噺鍒嗘暟锛堟潈閲嶆槸缁忛獙鍊硷紝鍚庨潰鍙皟锛?
     quality = (
         1.0 * (rmsH_L + rmsH_R) +
         15.0 * (cvL + cvR) +
@@ -165,26 +166,26 @@ def _pair_quality_features(cols: int, rows: int, cL, cR, image_size):
 
 def select_diverse_subset(payload, pattern, target_n=120, top_pool_factor=2.0):
     """
-    从大量标定图像对中选择质量好且分布均匀的子集，用于提高标定精度
+    浠庡ぇ閲忔爣瀹氬浘鍍忓涓€夋嫨璐ㄩ噺濂戒笖鍒嗗竷鍧囧寑鐨勫瓙闆嗭紝鐢ㄤ簬鎻愰珮鏍囧畾绮惧害
     
-    参数：
-        payload: 包含标定数据的字典，必须包含以下键：
-            - objpoints: 物体点坐标列表
-            - imgL: 左相机角点坐标列表
-            - imgR: 右相机角点坐标列表
-            - image_size: 图像尺寸
-            - used: 有效标定对数量
-        pattern: 棋盘格模式尺寸 (cols, rows)
-        target_n: 目标选择的标定对数量
-        top_pool_factor: 质量排序后的候选池大小因子
+    鍙傛暟锛?
+        payload: 鍖呭惈鏍囧畾鏁版嵁鐨勫瓧鍏革紝蹇呴』鍖呭惈浠ヤ笅閿細
+            - objpoints: 鐗╀綋鐐瑰潗鏍囧垪琛?
+            - imgL: 宸︾浉鏈鸿鐐瑰潗鏍囧垪琛?
+            - imgR: 鍙崇浉鏈鸿鐐瑰潗鏍囧垪琛?
+            - image_size: 鍥惧儚灏哄
+            - used: 鏈夋晥鏍囧畾瀵规暟閲?
+        pattern: 妫嬬洏鏍兼ā寮忓昂瀵?(cols, rows)
+        target_n: 鐩爣閫夋嫨鐨勬爣瀹氬鏁伴噺
+        top_pool_factor: 璐ㄩ噺鎺掑簭鍚庣殑鍊欓€夋睜澶у皬鍥犲瓙
     
-    返回：
-        新的payload字典，只包含选择的子集数据
+    杩斿洖锛?
+        鏂扮殑payload瀛楀吀锛屽彧鍖呭惈閫夋嫨鐨勫瓙闆嗘暟鎹?
     
-    实现步骤：
-        1. 按质量分数排序，取前 top_pool 个高质量标定对
-        2. 在 top_pool 中使用 farthest-point sampling 算法选择 target_n 个分布均匀的标定对
-        3. 组装并返回新的payload
+    瀹炵幇姝ラ锛?
+        1. 鎸夎川閲忓垎鏁版帓搴忥紝鍙栧墠 top_pool 涓珮璐ㄩ噺鏍囧畾瀵?
+        2. 鍦?top_pool 涓娇鐢?farthest-point sampling 绠楁硶閫夋嫨 target_n 涓垎甯冨潎鍖€鐨勬爣瀹氬
+        3. 缁勮骞惰繑鍥炴柊鐨刾ayload
     """
     used = int(payload.get("used", 0))
     if used <= 0:
@@ -201,51 +202,51 @@ def select_diverse_subset(payload, pattern, target_n=120, top_pool_factor=2.0):
     target_n = int(min(max(10, target_n), N))
     top_pool = int(min(N, max(target_n, int(round(target_n * float(top_pool_factor))))))
 
-    # 计算每个标定对的质量分数和特征向量
+    # 璁＄畻姣忎釜鏍囧畾瀵圭殑璐ㄩ噺鍒嗘暟鍜岀壒寰佸悜閲?
     qualities = np.zeros((N,), dtype=np.float64)
     feats = np.zeros((N, 5), dtype=np.float32)
 
     for i in range(N):
         q, f = _pair_quality_features(cols, rows, imgL[i], imgR[i], image_size)
-        qualities[i] = q  # 质量分数，越小越好
-        feats[i, :] = f    # 特征向量，用于多样性评估
+        qualities[i] = q  # 璐ㄩ噺鍒嗘暟锛岃秺灏忚秺濂?
+        feats[i, :] = f    # 鐗瑰緛鍚戦噺锛岀敤浜庡鏍锋€ц瘎浼?
 
-    # 按质量分数排序，选择前 top_pool 个
-    order = np.argsort(qualities)  # 小->大
+    # 鎸夎川閲忓垎鏁版帓搴忥紝閫夋嫨鍓?top_pool 涓?
+    order = np.argsort(qualities)  # 灏?>澶?
     pool_idx = order[:top_pool]
 
-    # 归一化特征向量（使用候选池的统计量）
+    # 褰掍竴鍖栫壒寰佸悜閲忥紙浣跨敤鍊欓€夋睜鐨勭粺璁￠噺锛?
     F = feats[pool_idx].astype(np.float64)
     mu = F.mean(axis=0)
-    sd = F.std(axis=0) + 1e-9  # 避免除零
+    sd = F.std(axis=0) + 1e-9  # 閬垮厤闄ら浂
     Fn = (F - mu) / sd
 
-    # 使用 farthest-point sampling (FPS) 算法选择分布均匀的标定对
+    # 浣跨敤 farthest-point sampling (FPS) 绠楁硶閫夋嫨鍒嗗竷鍧囧寑鐨勬爣瀹氬
     selected_pool_pos = []
-    selected_pool_pos.append(0)  # 先选择质量最好的
+    selected_pool_pos.append(0)  # 鍏堥€夋嫨璐ㄩ噺鏈€濂界殑
     dist_to_sel = np.full((top_pool,), np.inf, dtype=np.float64)
 
     for _ in range(1, target_n):
         last = selected_pool_pos[-1]
-        # 计算每个点到最近已选点的距离
+        # 璁＄畻姣忎釜鐐瑰埌鏈€杩戝凡閫夌偣鐨勮窛绂?
         d = np.linalg.norm(Fn - Fn[last], axis=1)
         dist_to_sel = np.minimum(dist_to_sel, d)
-        # 选择距离最远的点
+        # 閫夋嫨璺濈鏈€杩滅殑鐐?
         nxt = int(np.argmax(dist_to_sel))
         selected_pool_pos.append(nxt)
 
-    # 转换为原始索引
+    # 杞崲涓哄師濮嬬储寮?
     sel_idx = pool_idx[np.array(selected_pool_pos, dtype=np.int64)]
     sel_idx = sel_idx.tolist()
 
-    # 组装新的payload，只包含选择的子集
+    # 缁勮鏂扮殑payload锛屽彧鍖呭惈閫夋嫨鐨勫瓙闆?
     new_payload = dict(payload)
     new_payload["objpoints"] = [objpoints[i] for i in sel_idx]
     new_payload["imgL"] = [imgL[i] for i in sel_idx]
     new_payload["imgR"] = [imgR[i] for i in sel_idx]
     new_payload["used"] = len(sel_idx)
     return new_payload
-# ---------------- 新增结束 ----------------
+# ---------------- 鏂板缁撴潫 ----------------
 
 
 class ScanThread(QThread):
@@ -340,7 +341,7 @@ class CalibThread(QThread):
 
     def run(self):
         try:
-            # 验证 payload 数据
+            # 楠岃瘉 payload 鏁版嵁
             if not self.payload:
                 raise ValueError("Empty payload received")
                 
@@ -424,7 +425,7 @@ class CalibThread(QThread):
             log(f"[INFO] Saving YAML -> {out_yaml}")
             t0 = datetime.now()
             try:
-                # 确保输出目录存在
+                # 纭繚杈撳嚭鐩綍瀛樺湪
                 os.makedirs(os.path.dirname(out_yaml), exist_ok=True)
                 
                 fs = cv2.FileStorage(out_yaml, cv2.FILE_STORAGE_WRITE)
@@ -480,20 +481,23 @@ class CalibTab(QWidget):
         
         container = QWidget()
         lay = QVBoxLayout(container)
+        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setSpacing(14)
+        lay.addWidget(create_page_header("双目标定工作台", "从录制视频中筛选高质量棋盘格对，完成双目标定并导出 YAML。这个页面偏工程化，我把层次和留白做得更清楚一些。", accent="#d8a35d"))
 
         row = QHBoxLayout()
         self.video_edit = QLineEdit()
-        self.video_edit.setPlaceholderText("选择一个 record_*.avi")
+        self.video_edit.setPlaceholderText("\u9009\u62e9\u4e00\u4e2a record_*.avi")
         row.addWidget(self.video_edit)
 
-        btn_pick = QPushButton("选择视频")
+        btn_pick = QPushButton("\u9009\u62e9\u89c6\u9891")
         btn_pick.clicked.connect(self.pick_video)
         row.addWidget(btn_pick)
 
         lay.addLayout(row)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("内角点 cols:"))
+        row2.addWidget(QLabel("\u5185\u89d2\u70b9 cols:"))
         self.cols = QSpinBox()
         self.cols.setRange(3, 30)
         self.cols.setValue(11)
@@ -505,40 +509,42 @@ class CalibTab(QWidget):
         self.rows.setValue(8)
         row2.addWidget(self.rows)
 
-        row2.addWidget(QLabel("格长(mm):"))
+        row2.addWidget(QLabel("\u683c\u957f(mm):"))
         self.square = QDoubleSpinBox()
         self.square.setRange(1, 200)
         self.square.setValue(30.0)
         row2.addWidget(self.square)
 
-        row2.addWidget(QLabel("最大对数:"))
+        row2.addWidget(QLabel("\u6700\u5927\u5bf9\u6570:"))
         self.max_pairs = QSpinBox()
         self.max_pairs.setRange(10, 300)
         self.max_pairs.setValue(80)
         row2.addWidget(self.max_pairs)
 
-        row2.addWidget(QLabel("跳帧:"))
+        row2.addWidget(QLabel("\u8df3\u5e27:"))
         self.skip = QSpinBox()
         self.skip.setRange(1, 30)
         self.skip.setValue(3)
         row2.addWidget(self.skip)
 
-        self.btn_scan = QPushButton("扫描角点")
+        self.btn_scan = QPushButton("\u626b\u63cf\u89d2\u70b9")
         self.btn_scan.clicked.connect(self.start_scan)
         row2.addWidget(self.btn_scan)
 
-        self.btn_calib = QPushButton("一键标定+保存YAML")
+        self.btn_calib = QPushButton("\u4e00\u952e\u6807\u5b9a\u5e76\u4fdd\u5b58 YAML")
         self.btn_calib.clicked.connect(self.do_calibrate)
         row2.addWidget(self.btn_calib)
 
         lay.addLayout(row2)
 
         self.vis_label = QLabel("角点检测可视化（左右并排）")
+        self.vis_label.setObjectName("ImagePanel")
         self.vis_label.setMinimumSize(1280, 480)
         self.vis_label.setStyleSheet("border:1px solid gray; background:black;")
         lay.addWidget(self.vis_label)
 
         self.log = QTextEdit()
+        self.log.setObjectName("LogPanel")
         self.log.setReadOnly(True)
         self.log.setFixedHeight(220)
         lay.addWidget(self.log)
@@ -551,19 +557,19 @@ class CalibTab(QWidget):
         self.log.append(s)
 
     def pick_video(self):
-        p, _ = QFileDialog.getOpenFileName(self, "选择视频", RECORD_DIR, "Video (*.avi *.mp4 *.mkv)")
+        p, _ = QFileDialog.getOpenFileName(self, "\u9009\u62e9\u89c6\u9891", RECORD_DIR, "Video (*.avi *.mp4 *.mkv)")
         if p:
             self.video_edit.setText(p)
 
     def start_scan(self):
         vp = self.video_edit.text().strip()
         if not vp or not os.path.isfile(vp):
-            QMessageBox.warning(self, "错误", "请先选择有效视频文件")
+            QMessageBox.warning(self, "\u9519\u8bef", "\u8bf7\u5148\u9009\u62e9\u6709\u6548\u89c6\u9891\u6587\u4ef6")
             return
 
-        # 如果标定线程在跑，先不让扫（避免资源/状态混乱）
+        # 濡傛灉鏍囧畾绾跨▼鍦ㄨ窇锛屽厛涓嶈鎵紙閬垮厤璧勬簮/鐘舵€佹贩涔憋級
         if self.calib_thread is not None and self.calib_thread.isRunning():
-            QMessageBox.warning(self, "提示", "正在标定中，请等待标定完成后再扫描。")
+            QMessageBox.warning(self, "\u63d0\u793a", "\u6b63\u5728\u6807\u5b9a\u4e2d\uff0c\u8bf7\u7b49\u5f85\u6807\u5b9a\u5b8c\u6210\u540e\u518d\u626b\u63cf\u3002")
             return
 
         pattern = (int(self.cols.value()), int(self.rows.value()))
@@ -603,38 +609,38 @@ class CalibTab(QWidget):
             return
         self.log_add(f"[DONE] collected pairs = {payload['used']}")
         if payload["used"] < 15:
-            self.log_add("[HINT] 有效帧偏少：多半是棋盘不清晰/姿态不足/角点数写错。")
+            self.log_add("[HINT] \u6709\u6548\u5e27\u504f\u5c11\uff1a\u591a\u534a\u662f\u68cb\u76d8\u4e0d\u6e05\u6670\u3001\u59ff\u6001\u4e0d\u591f\u4e30\u5bcc\uff0c\u6216\u89d2\u70b9\u6570\u8bbe\u7f6e\u4e0d\u5bf9\u3002")
             return
 
-        # -------- 新增：自动从大量pairs里选“质量好+分散”的子集 --------
+        # -------- 鏂板锛氳嚜鍔ㄤ粠澶ч噺pairs閲岄€夆€滆川閲忓ソ+鍒嗘暎鈥濈殑瀛愰泦 --------
         pattern = (int(self.cols.value()), int(self.rows.value()))
         total = int(payload["used"])
 
-        # 你可以把 120 改成 80/100/150
+        # 浣犲彲浠ユ妸 120 鏀规垚 80/100/150
         target_n = min(80, total)
 
         if total > target_n:
             self.log_add(f"[INFO] Selecting diverse subset for calibration: {target_n}/{total} ...")
             self.payload = select_diverse_subset(self.payload, pattern, target_n=target_n, top_pool_factor=2.0)
             self.log_add(f"[OK] Subset selected. used={self.payload['used']} (from {total})")
-        # -------- 新增结束 --------
+        # -------- 鏂板缁撴潫 --------
 
     def do_calibrate(self):
         if self.payload is None or self.payload.get("used", 0) < 15:
-            QMessageBox.warning(self, "错误", "有效帧太少（建议>=15），先扫描收集角点")
+            QMessageBox.warning(self, "\u9519\u8bef", "\u6709\u6548\u5e27\u592a\u5c11\uff0c\u5efa\u8bae\u81f3\u5c11 15 \u7ec4\u540e\u518d\u5f00\u59cb\u6807\u5b9a\u3002")
             return
 
-        # 如果扫描线程还在跑，不建议同时标定
+        # 濡傛灉鎵弿绾跨▼杩樺湪璺戯紝涓嶅缓璁悓鏃舵爣瀹?
         if self.scan_thread is not None and self.scan_thread.isRunning():
-            QMessageBox.warning(self, "提示", "正在扫描角点中，请等扫描结束再开始标定。")
+            QMessageBox.warning(self, "\u63d0\u793a", "\u6b63\u5728\u626b\u63cf\u89d2\u70b9\u4e2d\uff0c\u8bf7\u7b49\u626b\u63cf\u7ed3\u675f\u540e\u518d\u5f00\u59cb\u6807\u5b9a\u3002")
             return
 
-        # 防重复点击
+        # 闃查噸澶嶇偣鍑?
         if self.calib_thread is not None and self.calib_thread.isRunning():
-            QMessageBox.information(self, "提示", "标定正在进行中，请等待完成。")
+            QMessageBox.information(self, "\u63d0\u793a", "\u6807\u5b9a\u6b63\u5728\u8fdb\u884c\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u3002")
             return
 
-        # UI：禁用按钮，避免重复触发
+        # UI锛氱鐢ㄦ寜閽紝閬垮厤閲嶅瑙﹀彂
         self.btn_calib.setEnabled(False)
         self.btn_scan.setEnabled(False)
 
@@ -657,14 +663,16 @@ class CalibTab(QWidget):
         self.log_add("\n[HINT] Rectification maps example:\n"
                      "  map1x,map1y = cv2.initUndistortRectifyMap(K1,D1,R1,P1,(w,h),cv2.CV_16SC2)\n"
                      "  map2x,map2y = cv2.initUndistortRectifyMap(K2,D2,R2,P2,(w,h),cv2.CV_16SC2)")
-        QMessageBox.information(self, "完成", f"标定完成并保存：\n{out_yaml}")
+        QMessageBox.information(self, "\u5b8c\u6210", f"\u6807\u5b9a\u5b8c\u6210\u5e76\u4fdd\u5b58\uff1a\n{out_yaml}")
 
         self.btn_calib.setEnabled(True)
         self.btn_scan.setEnabled(True)
 
     def _on_calib_err(self, msg: str):
         self.log_add(f"[ERR] calibrate failed: {msg}")
-        QMessageBox.warning(self, "错误", f"标定失败：\n{msg}")
+        QMessageBox.warning(self, "\u9519\u8bef", f"\u6807\u5b9a\u5931\u8d25\uff1a\n{msg}")
 
         self.btn_calib.setEnabled(True)
         self.btn_scan.setEnabled(True)
+
+

@@ -1,0 +1,39 @@
+<svg width="1200" height="680" viewBox="0 0 1200 680" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="680" rx="28" fill="#07141B"/>
+  <rect x="30" y="30" width="1140" height="620" rx="24" fill="#0B1D27" stroke="#18485B"/>
+  <rect x="56" y="54" width="180" height="44" rx="14" fill="#123144" stroke="#22D3EE"/>
+  <rect x="248" y="54" width="180" height="44" rx="14" fill="#102838" stroke="#1B5F77"/>
+  <rect x="440" y="54" width="180" height="44" rx="14" fill="#102838" stroke="#1B5F77"/>
+  <rect x="632" y="54" width="180" height="44" rx="14" fill="#102838" stroke="#1B5F77"/>
+  <text x="146" y="82" text-anchor="middle" fill="#D9F9FF" font-size="20" font-family="Segoe UI, Arial">Live Preview</text>
+  <text x="338" y="82" text-anchor="middle" fill="#8EC7D6" font-size="20" font-family="Segoe UI, Arial">Stereo Calibration</text>
+  <text x="530" y="82" text-anchor="middle" fill="#8EC7D6" font-size="20" font-family="Segoe UI, Arial">Two-Point Measure</text>
+  <text x="722" y="82" text-anchor="middle" fill="#8EC7D6" font-size="20" font-family="Segoe UI, Arial">Multi-Point 3D</text>
+  <rect x="56" y="118" width="1088" height="110" rx="24" fill="url(#hero)" stroke="#1D536A"/>
+  <text x="84" y="165" fill="#F3FCFF" font-size="38" font-weight="700" font-family="Segoe UI, Arial">Stereo Vision Studio</text>
+  <text x="84" y="204" fill="#B8E7F0" font-size="19" font-family="Segoe UI, Arial">Preview, calibrate, validate, and track 3D points in one desktop workflow.</text>
+  <rect x="56" y="252" width="340" height="160" rx="20" fill="#08161E" stroke="#1B5A71"/>
+  <rect x="430" y="252" width="340" height="160" rx="20" fill="#08161E" stroke="#1B5A71"/>
+  <rect x="804" y="252" width="340" height="160" rx="20" fill="#08161E" stroke="#1B5A71"/>
+  <text x="86" y="296" fill="#8FE9F1" font-size="26" font-family="Segoe UI, Arial">01 Preview & Record</text>
+  <text x="86" y="332" fill="#D8F4F8" font-size="18" font-family="Segoe UI, Arial">Open the camera, split side-by-side frames,</text>
+  <text x="86" y="357" fill="#D8F4F8" font-size="18" font-family="Segoe UI, Arial">record experiments, and save snapshots.</text>
+  <text x="460" y="296" fill="#8FE9F1" font-size="26" font-family="Segoe UI, Arial">02 Stereo Calibration</text>
+  <text x="460" y="332" fill="#D8F4F8" font-size="18" font-family="Segoe UI, Arial">Scan chessboard pairs, calibrate the rig,</text>
+  <text x="460" y="357" fill="#D8F4F8" font-size="18" font-family="Segoe UI, Arial">and keep YAML outputs local.</text>
+  <text x="834" y="296" fill="#8FE9F1" font-size="26" font-family="Segoe UI, Arial">03 3D Measurement</text>
+  <text x="834" y="332" fill="#D8F4F8" font-size="18" font-family="Segoe UI, Arial">Validate with two-point distance checks</text>
+  <text x="834" y="357" fill="#D8F4F8" font-size="18" font-family="Segoe UI, Arial">or track multi-point 3D sequences.</text>
+  <rect x="56" y="438" width="1088" height="176" rx="20" fill="#08161E" stroke="#1B5A71"/>
+  <text x="86" y="480" fill="#F3FCFF" font-size="30" font-family="Segoe UI, Arial">Repository policy</text>
+  <text x="86" y="520" fill="#BEEAF1" font-size="20" font-family="Segoe UI, Arial">Code and documentation are versioned.</text>
+  <text x="86" y="548" fill="#BEEAF1" font-size="20" font-family="Segoe UI, Arial">Recordings, point clouds, calibration YAMLs, and CSV exports stay local.</text>
+  <text x="86" y="576" fill="#BEEAF1" font-size="20" font-family="Segoe UI, Arial">This keeps the remote repository light, reusable, and safe to share.</text>
+  <defs>
+    <linearGradient id="hero" x1="56" y1="118" x2="1144" y2="228" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D2735"/>
+      <stop offset="0.55" stop-color="#123D53"/>
+      <stop offset="1" stop-color="#5CA2D8"/>
+    </linearGradient>
+  </defs>
+</svg>

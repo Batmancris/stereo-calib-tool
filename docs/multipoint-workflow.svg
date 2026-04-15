@@ -1,0 +1,38 @@
+<svg width="1200" height="680" viewBox="0 0 1200 680" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="680" rx="28" fill="#081318"/>
+  <text x="70" y="88" fill="#F5FCFF" font-size="40" font-weight="700" font-family="Segoe UI, Arial">Multi-point 3D workflow</text>
+  <text x="70" y="124" fill="#9ED9E6" font-size="20" font-family="Segoe UI, Arial">A practical loop for initialization, solving, tracking, and export.</text>
+  <rect x="70" y="180" width="220" height="120" rx="22" fill="#0D2330" stroke="#18C6C8"/>
+  <rect x="350" y="180" width="220" height="120" rx="22" fill="#0D2330" stroke="#18C6C8"/>
+  <rect x="630" y="180" width="220" height="120" rx="22" fill="#0D2330" stroke="#18C6C8"/>
+  <rect x="910" y="180" width="220" height="120" rx="22" fill="#0D2330" stroke="#18C6C8"/>
+  <text x="180" y="222" text-anchor="middle" fill="#F3FCFF" font-size="25" font-family="Segoe UI, Arial">1. Load YAML</text>
+  <text x="180" y="252" text-anchor="middle" fill="#BDECF2" font-size="18" font-family="Segoe UI, Arial">Rectification maps</text>
+  <text x="180" y="276" text-anchor="middle" fill="#BDECF2" font-size="18" font-family="Segoe UI, Arial">P1 / P2 / Q ready</text>
+  <text x="460" y="222" text-anchor="middle" fill="#F3FCFF" font-size="25" font-family="Segoe UI, Arial">2. Freeze Frame</text>
+  <text x="460" y="252" text-anchor="middle" fill="#BDECF2" font-size="18" font-family="Segoe UI, Arial">Pick a clean stereo pair</text>
+  <text x="460" y="276" text-anchor="middle" fill="#BDECF2" font-size="18" font-family="Segoe UI, Arial">before manual init</text>
+  <text x="740" y="222" text-anchor="middle" fill="#F3FCFF" font-size="25" font-family="Segoe UI, Arial">3. Initialize Points</text>
+  <text x="740" y="252" text-anchor="middle" fill="#BDECF2" font-size="18" font-family="Segoe UI, Arial">Left click, auto-match right,</text>
+  <text x="740" y="276" text-anchor="middle" fill="#BDECF2" font-size="18" font-family="Segoe UI, Arial">then refine if needed</text>
+  <text x="1020" y="222" text-anchor="middle" fill="#F3FCFF" font-size="25" font-family="Segoe UI, Arial">4. Solve 3D</text>
+  <text x="1020" y="252" text-anchor="middle" fill="#BDECF2" font-size="18" font-family="Segoe UI, Arial">Use Q reprojection first</text>
+  <text x="1020" y="276" text-anchor="middle" fill="#BDECF2" font-size="18" font-family="Segoe UI, Arial">triangulation as fallback</text>
+  <path d="M290 240H350" stroke="#42D7E8" stroke-width="6" stroke-linecap="round"/>
+  <path d="M570 240H630" stroke="#42D7E8" stroke-width="6" stroke-linecap="round"/>
+  <path d="M850 240H910" stroke="#42D7E8" stroke-width="6" stroke-linecap="round"/>
+  <rect x="160" y="390" width="300" height="170" rx="24" fill="#101F1E" stroke="#3CCB96"/>
+  <rect x="520" y="390" width="300" height="170" rx="24" fill="#2B1A16" stroke="#DD8A6F"/>
+  <rect x="880" y="390" width="200" height="170" rx="24" fill="#0F2029" stroke="#5CA2D8"/>
+  <text x="310" y="438" text-anchor="middle" fill="#EFFFF7" font-size="28" font-family="Segoe UI, Arial">Save Current Frame</text>
+  <text x="310" y="474" text-anchor="middle" fill="#C7F4DF" font-size="18" font-family="Segoe UI, Arial">Only succeeds when every point</text>
+  <text x="310" y="498" text-anchor="middle" fill="#C7F4DF" font-size="18" font-family="Segoe UI, Arial">already has a valid 3D coordinate.</text>
+  <text x="670" y="438" text-anchor="middle" fill="#FFF0EA" font-size="28" font-family="Segoe UI, Arial">Track Next Frame</text>
+  <text x="670" y="474" text-anchor="middle" fill="#FFD8C7" font-size="18" font-family="Segoe UI, Arial">LK optical flow on left image,</text>
+  <text x="670" y="498" text-anchor="middle" fill="#FFD8C7" font-size="18" font-family="Segoe UI, Arial">right-image rematch, then re-solve 3D.</text>
+  <text x="980" y="438" text-anchor="middle" fill="#EAF5FF" font-size="28" font-family="Segoe UI, Arial">Export</text>
+  <text x="980" y="474" text-anchor="middle" fill="#C6E2FF" font-size="18" font-family="Segoe UI, Arial">CSV</text>
+  <text x="980" y="500" text-anchor="middle" fill="#C6E2FF" font-size="18" font-family="Segoe UI, Arial">3D animation</text>
+  <path d="M460 474H520" stroke="#9DE3AE" stroke-width="6" stroke-linecap="round"/>
+  <path d="M820 474H880" stroke="#F0A38C" stroke-width="6" stroke-linecap="round"/>
+</svg>
